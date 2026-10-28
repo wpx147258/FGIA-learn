@@ -85,3 +85,32 @@ GT 框来自 `bounding_boxes.txt`）。
    GT、不需要训练的规则，可能把 11.2 里那 +5.9 拿到手而不吃 −11.9 的亏；
 2. **AttnPool 与 CAM 分支可能冗余**：需要跑一次 `attnp_cls + cam_crop=0`，看掉点是否远小于
    基线的 −0.85；若远小于，说明「末端注意力池化」与「训练期放大」在功能上重叠。
+
+---
+
+## 十二、全模块审计（2026-10-29）与受影响结论
+
+对 `model/*.py` 逐行审计，发现的问题与处理：
+
+### 12.1 会改变结论的
+
+| 问题 | 影响 | 处理 |
+|---|---|---|
+| `region_route` 在 forward 最前面接管，**CAM 分支从未执行**（配置里却写着 cam_crop=0.2） | 88.40 的正确参照是 `nocam` 88.21 → **+0.19（p=0.55）**，不是 −0.66；「显著更差」撤销 | build_model 增加互斥检查；文档已改 |
+| `RegionRouter.gamma` 初始 0 → sigmoid=0.5，且末层零初始化后 softmax 仍均匀 → **初始就叠加了区域项**（差 0.56） | 「从基线出发学路由」不成立 | gamma 初始改为 −10（初始差 2.3e−6） |
+| 0 维标量（`GeM.p`、`CosineHead.scale`）落进 weight decay 组 | GeM 的 p 从 3.0 被拉到 1.63；「GeM 不如 GAP」的**机制解释**不可靠（符号大概率不变） | `split()` 改为 `ndim <= 1` 免 wd |
+| `MultiScaleParts` 从不更新 `_last_div` / `_last_part_logits` | ms 系列的 `pa_div_w=1.0` 全程空转；深度对比仍有效 | 补上基于 JS 的散度；`pa_aux_w>0` 且未开 logit_fuse 时直接报错 |
+| `pa_veto` 在**训练**主路径也会改 logits（命中样本 +1e3） | 「主分支完全不动」不成立；命中率低，头号结论大概率仍稳 | 限定只在推理时生效 |
+
+### 12.2 已修的静默失效/崩溃
+
+- `SlotParts` 缺 `detach_feat/perm/no_residual/res_scale` 属性 → 一用就 AttributeError；
+- `part_masks` 不应用 `perm` → `pa_perm` 与 rerank/part_train_aux 组合会用错通道；
+- `_pa_logit_fuse` 形状不匹配时静默返回原 logits → 非 grouped / layer3 会「开了等于没开」；
+- `backbone_lr_layers` 为空时 `gc_lr/pa_lr/gc_wd/pa_wd` 被静默忽略。
+
+### 12.3 已知但暂不改的
+
+- `pa_compete=true` 时 `_last_div` 返回的是负载均衡而非 Dis/Div（文档早已登记，解释时不要称「散度」）；
+- eval/y=None 只走第一个聚合模块，训练主路径会依次叠加多个（现有 run 都只开一个）；
+- CAM 融合训练用 GT 标签选区域、测试用预测类（错分样本的区域分布不同）。

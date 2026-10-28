@@ -223,6 +223,8 @@ class PartAttention(nn.Module):
 
     def part_masks(self, feat: torch.Tensor) -> torch.Tensor:
         """返回 [B,K,h,w] 的部件掩码；口径与 forward 内部一致（sigmoid 或竞争 softmax）。"""
+        if self.perm is not None:
+            feat = feat[:, self.perm]
         raw = self.det(feat)
         b, k, h, w = raw.shape
         raw = raw.flatten(2)
@@ -385,6 +387,11 @@ class SlotParts(nn.Module):
         self.dim = int(dim)
         self.iters = int(iters)
         self.eps = float(eps)
+        # 与 PartAttention 对齐的接口属性（否则 forward/hook 第一行就 AttributeError）
+        self.res_scale = 0.0
+        self.no_residual = False
+        self.detach_feat = False
+        self.perm = None
         self.proj = nn.Linear(channels, dim, bias=False)
         self.slots_mu = nn.Parameter(torch.zeros(1, 1, dim))
         self.slots_log_sigma = nn.Parameter(torch.zeros(1, 1, dim))
@@ -493,10 +500,13 @@ class MultiScaleParts(nn.Module):
 
     def __init__(self, ch3: int, ch4: int, num_parts: int = 4, dim: int = 256,
                  depth: int = 2, heads: int = 4, mlp_ratio: float = 2.0,
-                 dropout: float = 0.0, num_classes: int = 0):
+                 dropout: float = 0.0, num_classes: int = 0,
+                 js_w: float = 0.0, js_target: float = 0.35):
         super().__init__()
         self.num_parts = int(num_parts)
         self.dim = int(dim)
+        self.js_w = float(js_w)
+        self.js_target = float(js_target)
         self.g3 = ch3 // self.num_parts
         self.g4 = ch4 // self.num_parts
         if ch3 % self.num_parts or ch4 % self.num_parts:
@@ -552,6 +562,20 @@ class MultiScaleParts(nn.Module):
         t4p = self.norm(t[:, self.num_parts:])
         z4m = z4 + self.back4(t4p)                              # 初始 back=0 => z4m=z4
         self._last_z = z4m
+        # 散度诊断：对 layer4 的 K 张掩码算两两 JS（hinge 形式与 PartAttention 同标尺）。
+        # 旧版这里从不更新 _last_div，导致 pa_div_w 对 ms 系列全程是空转。
+        with torch.no_grad():
+            m4 = torch.sigmoid(self.det4(l4)).flatten(2)
+            a4 = m4 / m4.sum(-1, keepdim=True).clamp_min(1e-6)
+            mm = (a4[:, :, None, :] + a4[:, None, :, :]) / 2.0
+            la = a4.clamp_min(1e-9).log()[:, :, None, :]
+            lm = mm.clamp_min(1e-9).log()
+            kl1 = (a4[:, :, None, :] * (la - lm)).sum(-1)
+            js = 0.5 * (kl1 + kl1.transpose(1, 2))
+            off_ = 1.0 - torch.eye(js.size(1), device=js.device)
+            js_off = (js * off_).sum(dim=(1, 2)) / (js.size(1) * (js.size(1) - 1))
+            self._last_div = (self.js_target - js_off).clamp_min(0).mean() * self.js_w \
+                if self.js_w > 0 else torch.zeros((), device=l4.device)
         with torch.no_grad():
             self._last_ratio = float(self.back4(t4p).norm().mean() / z4.norm().mean().clamp_min(1e-12))
         return z4m
@@ -583,6 +607,8 @@ def build_multiscale_parts(backbone: nn.Module, mcfg: dict, num_classes: int = 0
         mlp_ratio=float(mcfg.get("pa_mlp", 2.0)),
         dropout=float(mcfg.get("pa_dropout", 0.0)),
         num_classes=int(num_classes),
+        js_w=float(mcfg.get("pa_js_w", 0.0)),
+        js_target=float(mcfg.get("pa_js_target", 0.35)),
     )
     try:
         p = next(backbone.parameters())

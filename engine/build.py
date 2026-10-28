@@ -396,7 +396,9 @@ def build_optimizer(model: nn.Module, cfg: dict) -> torch.optim.Optimizer:
         for param in module.parameters():
             if not param.requires_grad:
                 continue
-            (no_decay if param.ndim == 1 else decay).append(param)
+            # ⚠️ 0 维标量（GeM.p、CosineHead.scale）也必须免 wd：
+            # 只判 ndim==1 会让它们落进 wd=0.05 的组，被持续往 0 拉
+            (no_decay if param.ndim <= 1 else decay).append(param)
         return [
             {"params": decay, "lr": base_lr * m_scale, "weight_decay": wd, "part": tag},
             {"params": no_decay, "lr": base_lr * m_scale, "weight_decay": 0.0, "part": tag},

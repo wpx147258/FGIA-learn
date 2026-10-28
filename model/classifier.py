@@ -625,7 +625,7 @@ class Classifier(nn.Module):
         logits = self.head(pooled)
         if self.pa_logit_fuse:
             logits = self._pa_logit_fuse(logits)
-        if self.pa_veto:
+        if self.pa_veto and not self.training:
             logits = self._pa_veto(logits)
 
         out = {"logits": logits}
@@ -870,6 +870,13 @@ def build_model(cfg: dict) -> Classifier:
         raise ValueError("cam_fuse_regions>=2 需要 TRAIN.cam_margin2（第二路的裁剪外扩）")
     if cam_fuse and mcfg.get("fusion") == "head_body":
         raise ValueError("MODEL.cam_fuse 不支持与 MODEL.fusion 同时开启")
+    if mcfg.get("region_route", False) and float(cfg["TRAIN"].get("cam_crop", 0.0)) > 0:
+        raise ValueError("MODEL.region_route 会接管 forward 并跳过 CAM 分支；"
+                         "请显式设 TRAIN.cam_crop=0（否则 CAM 损失静默不生效）")
+    if (mcfg.get("pa_multiscale", False) and float(cfg["TRAIN"].get("pa_aux_w", 0.0)) > 0
+            and not mcfg.get("pa_logit_fuse", False)):
+        raise ValueError("MultiScaleParts 没有自己的部件分类头；开了 pa_aux_w 就必须开 "
+                         "pa_logit_fuse，否则逐部件 CE 会静默缺失")
     part_rerank = bool(mcfg.get("part_rerank", False))
     if part_rerank and not mcfg.get("part_attn", False):
         raise ValueError("MODEL.part_rerank 需要同时开 MODEL.part_attn（提供部件掩码）")

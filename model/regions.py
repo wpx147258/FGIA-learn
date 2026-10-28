@@ -84,7 +84,9 @@ class RegionRouter(nn.Module):
         # 零初始化 + 一个可学习的整体缩放：初始时 fused = main（权重全 0）
         nn.init.zeros_(self.mlp[-1].weight)
         nn.init.zeros_(self.mlp[-1].bias)
-        self.gamma = nn.Parameter(torch.zeros(1))
+        # ⚠️ 不能用 0：sigmoid(0)=0.5，初始就叠加了一半区域项（实测 |fused-main|≈0.56）。
+        # 取 -10 => sigmoid≈4.5e-5，初始 fused 与 main 的差在 1e-3 量级。
+        self.gamma = nn.Parameter(torch.full((1,), -10.0))
 
     def forward(self, feats: torch.Tensor):
         w = self.mlp(feats).softmax(dim=-1)              # [B,K+1]
