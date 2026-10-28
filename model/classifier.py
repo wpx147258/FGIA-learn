@@ -649,6 +649,11 @@ class Classifier(nn.Module):
             out["pa_div"] = pa_cap[1]
         if self.tokenlearner is not None and self.tokenlearner._reg is not None:
             out["tl_reg"] = self.tokenlearner._reg
+        if self.training and getattr(self.tokenlearner, "_last_z", None) is not None:
+            # 逐 token 辅助 CE（MA-CNN 式部件损失）：每个学到的部件 token 都要单独
+            # 认对类别。它把「往背景上飘」这条路堵死——背景特征不可能单独分类；
+            # 同时不阻止 token 之间分化（那是 JS 项的职责），两者互补。
+            out["logits_tl"] = self.head(self.tokenlearner._last_z)   # [B,S,num_classes]
         if self.part_train_aux and self.training and y is not None:
             pa = getattr(self.backbone, "part_attn", None)
             if pa is not None:

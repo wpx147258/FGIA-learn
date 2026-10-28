@@ -451,6 +451,10 @@ TRAIN:
   main_w: 1.0
   # TokenLearner 的防塌缩正则总权重（熵目标 + 图间多样性）
   tl_reg_w: 0.0
+  # 逐 token 辅助 CE 的权重（只在 tl_replace=true 时生效）：每个部件 token
+  # 单独过同一个分类头。作用是把 token 锚在可分类的物体区域上，堵住
+  # 「分化到背景」这条退路；不负责让 token 互相分化（那是 tl_js_w）。
+  tl_aux_w: 0.0
   pmg_stage_w: 0.0
   deep_sup_w: 0.0
   # attn_pool 模块单独的学习率（留空 = 用 TRAIN.lr）。从零初始化的 Transformer

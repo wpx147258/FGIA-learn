@@ -304,6 +304,8 @@ def build_criterion(cfg: dict) -> nn.Module:
             # 部件注意力的「每个部件都要能分类」辅助损失（与旧 attn_aux 的
             # logits_parts 分开命名，避免两套模块互相串权重）
             "logits_pa":    t.get("pa_aux_w", 0.0),
+            # 逐 token 辅助 CE（TokenLearner replace 出口）：每个部件都要能单独分类
+            "logits_tl":    t.get("tl_aux_w", 0.0),
             # 双路融合（整图 + CAM 放大）的总损失权重
             "logits_fused": t.get("cam_fuse_w", 0.0),
             "logits_hyp1": t.get("hyp_aux_w", 0.0),

@@ -221,6 +221,10 @@ class TokenLearner(nn.Module):
             nn.init.zeros_(self.out.weight)
             nn.init.zeros_(self.out.bias)
         self._last_entropy = None
+        # replace 出口下缓存 [B,S,C] 的部件 token（C = 骨干通道），供分类头做逐 token
+        # 辅助 CE（MA-CNN 式的「每个部件都要能分类」）。非 replace 出口的 token 在
+        # dim 空间里，分类头吃不了，保持 None。
+        self._last_z = None
         # 防塌缩有两条独立的轴，别混用：
         #   ent_target —— 管单张图的集中程度；均匀覆盖 k 个位置时 H=ln k。
         #                 一般用 exp(H) 表示有效位置数；H=2.0~2.5 对应约 7.4~12.2，
@@ -312,6 +316,7 @@ class TokenLearner(nn.Module):
             # w [B,N,S] 直接加权 C 维原始特征；初始 w 均匀 => 输出 == GAP
             f_c = feat.flatten(2).transpose(1, 2)                # [B,N,C]
             z_c = torch.einsum("bns,bnc->bsc", w, f_c)           # [B,S,C]
+            self._last_z = z_c
             return z_c.mean(dim=1)
         return self.out(v)
 
