@@ -133,22 +133,45 @@ class SEGate(nn.Module):
 class TokenLearner(nn.Module):
     """软空间注意力池化（TokenLearner, NeurIPS 2021）。
 
-    与 AttnPool 的区别：AttnPool 让 196 个 token 互相看，输出仍是"整体的一个向量"；
-    这里则是学 S 张空间权重图，每张图把 196 个位置加权求和成一个 token，
-    得到 S 个"部位级"表示再平均。它不改 token 之间的关系，只改**聚合方式**。
+    与 AttnPool 的区别：AttnPool 让 196 个**空间格子**互相看，输出仍是"整体的一个向量"；
+    这里则是学 S 张空间权重图，每张图把 196 个位置加权求和成一个 token，得到 S 个
+    "部位级"表示。默认（attn_depth=0）这些 token 之间不交互、直接平均；设
+    attn_depth>0 可选让它们互相看（与 AttnPool 的对照项）。
 
     为什么值得试：我们的诊断显示
       - 61.9% 的 token 对真实类贡献为负，但硬剪掉它们不改变准确率（负贡献量级太小）
       - 贡献最高的 20% token 占正向质量 96.9%
     硬剪无效，但"按可学习的空间权重重新加权"未必无效 —— 这是两者唯一没被排除的差别。
 
-    输出层零初始化，训练第 0 步与基线等价；同时返回 S 张权重图的熵，
-    熵接近 ln(196) 说明权重退化成均匀（等于 GAP），接近 0 说明塌到单个位置。
+    输出层零初始化，训练第 0 步与基线等价。
+
+    ⚠️ 两种不同的「塌缩」，必须用两个不同的量区分（2026-10-29 修正）：
+      1) 每张图塌成一个点：熵 → 0。各图可选中相同或不同位置；每个 token 几乎只取
+         一个位置的特征，但不代表特征本身没有信息（实测 r50_tl_s8：熵 0.0076、两两 JS 0.57）。
+      2) 八张图变成同一张图的副本：熵可以「看起来很健康」（=2.0），但两两 JS → 0
+         （实测 r50_tl_s8_reg：熵 2.03、JS 0.047、中心化余弦 0.86）。
+    只看熵无法识别第 2 种。两个量的解释：
+      * 均匀分配到 k 个位置时 H=ln k；一般分布的 exp(H) 是有效位置数，
+        不等于实际支撑大小，也不保证空间连续。目标 H=2.1~2.8 可作为实验起点。
+      * JS 是两分布的 Jensen-Shannon 散度（自然对数，上界 ln2≈0.693）：
+        分布相同为 0，支撑完全不重叠为 ln2。仅当两图各自在同样多的位置上均匀分布时，
+        共享一半支撑才对应 JS≈0.35；一般不能将 JS 阈值直接换算为重叠比例。
+        当前正则约束每张图片的图对平均 JS，不保证每一对都达到 js_target。
+
+    历史 bug（已修，两处）：
+      * 原 einsum("bns,bms->bsm") 对 n 求和、输出 [B,S,N]；因每张图的权重和为 1，
+        结果等于 w.transpose(1,2)，没有计算图间重叠；已改为 `w.transpose(1,2) @ w`；
+      * `div_w` 只被当作开关，数值上没有乘进正则；已改为 `div_w * 重叠均值`。
+    旧正则仍可能影响梯度，但不符合图间重叠惩罚的设计。r50_tl_s8 测试了无正则版本，
+    r50_tl_s8_reg 测试了旧正则版本；两者均不能替代修正后正则的实验。
     """
 
     def __init__(self, in_channels: int = 2048, out_dim: int = 2048, dim: int = 256,
                  s_tokens: int = 8, dropout: float = 0.0,
-                 ent_target: float = 0.0, div_w: float = 0.0):
+                 ent_target: float = 0.0, div_w: float = 0.0,
+                 js_w: float = 0.0, js_target: float = 0.35,
+                 attn_depth: int = 0, attn_heads: int = 4,
+                 readout: str = "mean"):
         super().__init__()
         self.s = int(s_tokens)
         self.dim = int(dim)
@@ -162,12 +185,33 @@ class TokenLearner(nn.Module):
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
         self._last_entropy = None
-        # 防塌缩：不加约束时实测 8 张权重图的熵会掉到 0.004（全部塌成单点），
-        # 等于退化成"学出来的 top-8 池化"。两个正则：
-        #   ent_target：把每张图的熵往目标值拉（均匀=5.28，单点=0，目标取 2 左右）
-        #   div_w：惩罚 8 张图之间的重叠，逼它们覆盖不同区域
+        # 防塌缩有两条独立的轴，别混用：
+        #   ent_target —— 管单张图的集中程度；均匀覆盖 k 个位置时 H=ln k。
+        #                 一般用 exp(H) 表示有效位置数；H=2.0~2.5 对应约 7.4~12.2，
+        #                 H=0.5 对应约 1.6。这不代表实际覆盖数量或空间连续性。
+        #   div_w / js_w —— 约束图间重叠或分布差异；仅匹配目标熵不能保证它们分化
+        #                 （实测把熵拉到 2.0 后，八张图仍可能是同一张的副本）。
+        # 旧 div 的 einsum 未计算图间重叠，div_w 也未乘入损失；并非完全无梯度，见类 docstring。
         self.ent_target = float(ent_target)
         self.div_w = float(div_w)
+        # JS 正则：当每张图片的图对平均 JS 低于 js_target 时施加惩罚。
+        # 分布相同 JS=0，支撑完全不重叠 JS=ln2；仅对支撑大小相同的均匀分布，
+        # 共享 25% / 50% 支撑才分别对应约 0.52 / 0.35，不能推广为一般的重叠比例。
+        self.js_w = float(js_w)
+        self.js_target = float(js_target)
+        # 部件 token 之间做自注意力（0 = 不做，保持旧行为）。
+        # readout="cls" 与 AttnPool 对齐：用「token 均值」当全局 token 拼在最前面，
+        # 过完注意力后读它自己 —— 两种池化机制可以形成干净对照。
+        if readout not in ("mean", "cls"):
+            raise ValueError(f"readout 只能是 mean | cls，收到 {readout!r}")
+        self.readout = readout
+        if attn_depth > 0:
+            layer = nn.TransformerEncoderLayer(
+                d_model=dim, nhead=attn_heads, dim_feedforward=int(dim * 2),
+                dropout=dropout, activation="gelu", batch_first=True, norm_first=True)
+            self.blocks = nn.TransformerEncoder(layer, num_layers=int(attn_depth))
+        else:
+            self.blocks = nn.Identity()
         self._reg = None
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
@@ -175,40 +219,63 @@ class TokenLearner(nn.Module):
         logits = self.score(x)                              # [B,N,S]
         w = logits.softmax(dim=1)                           # 对位置归一化
         z = torch.einsum("bns,bnd->bsd", w, x)              # [B,S,dim]  每张图一个 token
-        v = self.norm(z).mean(dim=1)
-        ent = -(w * w.clamp_min(1e-9).log()).sum(dim=1)      # [B,S] 每张图一个熵
+        if self.readout == "cls":
+            gap = z.mean(dim=1, keepdim=True)               # 每次前向用部件 token 均值构造全局 token
+            t = self.blocks(torch.cat([gap, z], dim=1))
+            v = self.norm(t)[:, 0]
+        else:
+            t = self.blocks(z)
+            v = self.norm(t).mean(dim=1)
+        # 每张图在 N 个位置上的熵 [B,S]：衡量权重的集中程度，不包含空间几何信息，
+        # 也不说明 S 张图彼此是否相同；后者可用 JS 衡量，div 则是内积重叠惩罚。
+        ent = -(w * w.clamp_min(1e-9).log()).sum(dim=1)
         with torch.no_grad():
             self._last_entropy = float(ent.mean())
         reg = None
         if self.ent_target > 0:
             reg = ((ent - self.ent_target) ** 2).mean()
         if self.div_w > 0:
-            # w 在位置上归一化，所以两张图的点积就是重叠度：0 = 不重叠，1 = 完全重合
-            ov = torch.einsum("bns,bms->bsm", w, w)
+            # ov[b,i,j] = sum_n w[b,n,i] * w[b,n,j]，形状 [B,S,S]。
+            # 概率分布的内积在 [0,1] 内：支撑不重叠为 0，同一位置上的单点分布为 1；
+            # 两张相同的均匀图内积仅为 1/N，所以不能将内积直接解释为分布相似度。
+            # 旧 einsum("bns,bms->bsm") 输出 [B,S,N]，等于转置后的 w，未计算图间重叠。
+            ov = w.transpose(1, 2) @ w
             s_ = ov.size(1)
             off = (ov.sum(dim=(1, 2)) - ov.diagonal(dim1=1, dim2=2).sum(1)) / (s_ * (s_ - 1))
-            dv = off.mean()
+            # ⚠️ 这里原来是 `dv = off.mean(); reg += dv` —— div_w 只当开关用，
+            # 数值上完全没有乘进去。现在按权重乘，div_w 才真正控制强度。
+            dv = self.div_w * off.mean()
             reg = dv if reg is None else reg + dv
+        if self.js_w > 0 and self.s > 1:
+            # 沿位置维 N 计算两两 JS：JS(P,Q) = (KL(P||M) + KL(Q||M))/2，M=(P+Q)/2。
+            # 精确计算时 JS=0 当且仅当分布相同，上界为 ln2；clamp 用于避免 log(0)。
+            m_ = (w[:, :, :, None] + w[:, :, None, :]) / 2.0
+            lw = w.clamp_min(1e-9).log()[:, :, :, None]
+            lm = m_.clamp_min(1e-9).log()
+            kl1 = (w[:, :, :, None] * (lw - lm)).sum(1)          # [B,S,S]
+            js = 0.5 * (kl1 + kl1.transpose(1, 2))
+            off_ = 1.0 - torch.eye(js.size(1), device=js.device)
+            # 先排除自身比较并平均图对，再做 hinge；部分相似图对可被差异较大的图对抵消。
+            js_off = (js * off_).sum(dim=(1, 2)) / (js.size(1) * (js.size(1) - 1))
+            jr = self.js_w * (self.js_target - js_off).clamp_min(0).mean()
+            reg = jr if reg is None else reg + jr
         self._reg = reg
         return self.out(v)
 
 
 class ContentPool(nn.Module):
-    """内容相关的注意力池化，**初始化时逐位等于 GAP**。
+    """内容相关的空间注意力池化，替换 GAP，输入 [B,C,H,W]、输出 [B,C]。
 
-    与 AttnPool / TokenLearner 的关键差别在初始化方式：
-      * 前两者把输出层零初始化（初始等价于基线，但注意力权重在第 0 步拿不到梯度，
-        必须先等输出层长出来，才能反过来塑造注意力）——这是一次冷启动；
-      * 这里把「均匀注意力」直接写成初始化：q 与 Wk 全零 => logits 全零 =>
-        softmax 均匀 => attn 加权和恒等于 GAP。于是初始输出与 GAP 逐位相等，
-        但梯度从第 0 步就能流进 q 和 Wk。
+    与 AttnPool / TokenLearner 的残差分支不同，本模块直接返回完整池化特征。
+    value 使用原始 C 维特征，仅用低维 key 和共享 query 生成一张空间权重图，
+    不做位置间自注意力，也不对聚合后的特征做输出投影。
 
-    为什么这么改：CLIP-RN50 的冻结特征探针给了一个很直接的数字 ——
-    同一套权重，GAP 头 37.73%、注意力池化头 59.93%（CUB val）。注意力池化不是
-    "可有可无的加料"，但它是在预训练阶段长出来的。我们要在 5400 张图上从零学，
-    唯一能改善的就是别让它从"零输出"开始学。
+    初始化保留 Wk 的随机权重，只将 q 置零：logits=0，注意力均匀，数学上输出
+    等于 GAP（浮点运算可能有舍入误差）。第一步 q 可获得梯度，Wk 的分类损失
+    梯度为零；q 更新后 Wk 才能获得梯度。不能同时把 q 和 Wk 置零，否则两者
+    梯度都为零，注意力会一直停在均匀分布。alpha 在 pool 与 GAP 不同时才能学习。
 
-    结构（value 直接用特征，不做输出投影，参数量只有 C×r + r）：
+    结构（参数量 C×r + r + 1）：
         k    = X Wk                     [B,N,r]
         attn = softmax(q·k / sqrt(r))   [B,N]
         pool = attn @ X                 [B,C]   （均匀时 == GAP）
@@ -219,22 +286,33 @@ class ContentPool(nn.Module):
         super().__init__()
         self.channels = int(channels)
         self.rank = int(rank)
-        self.wk = nn.Linear(channels, rank, bias=False)
-        self.q = nn.Parameter(torch.zeros(rank))
+        if self.channels <= 0 or self.rank <= 0:
+            raise ValueError("ContentPool 的 channels 和 rank 必须为正整数")
+        self.wk = nn.Linear(self.channels, self.rank, bias=False)
+        self.q = nn.Parameter(torch.zeros(self.rank))
         self.alpha = nn.Parameter(torch.zeros(1))     # sigmoid(0)=0.5
-        nn.init.zeros_(self.wk.weight)
+        # Wk 保持默认随机初始化，避免与零 query 相乘导致两侧梯度同时为零。
         self._last_entropy = 0.0
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
-        b, c, h, w = feat.shape
+        if feat.ndim != 4 or feat.size(1) != self.channels:
+            raise ValueError(
+                f"ContentPool 需要 [B,{self.channels},H,W]，收到 {tuple(feat.shape)}")
+        if feat.size(2) == 0 or feat.size(3) == 0:
+            raise ValueError("ContentPool 的空间维度 H 和 W 必须非空")
         x = feat.flatten(2).transpose(1, 2)                  # [B,N,C]
-        k = self.wk(x)                                       # [B,N,r]
-        logits = (k * self.q).sum(-1) / (self.rank ** 0.5)   # [B,N]
+        k = self.wk(x)                                      # [B,N,r]
+        # AMP 下以 FP32 计算打分、softmax、累加与熵，避免低精度下的溢出和 log(0)。
+        # 保留 FP64 输入的精度；最终输出恢复输入 dtype，供主干的分类头直接使用。
+        acc_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+        x_acc = x.to(dtype=acc_dtype)
+        logits = (k.to(dtype=acc_dtype) * self.q.to(dtype=acc_dtype)).sum(-1)
+        logits = logits / (self.rank ** 0.5)                 # [B,N]
         attn = logits.softmax(dim=-1)
-        pool = (attn.unsqueeze(-1) * x).sum(dim=1)           # [B,C]
-        gap = x.mean(dim=1)
-        a = torch.sigmoid(self.alpha)
+        pool = (attn.unsqueeze(-1) * x_acc).sum(dim=1)       # [B,C]
+        gap = x_acc.mean(dim=1)
+        a = torch.sigmoid(self.alpha.to(dtype=acc_dtype))
         with torch.no_grad():
             ent = -(attn * attn.clamp_min(1e-9).log()).sum(1).mean()
             self._last_entropy = float(ent)
-        return a * pool + (1.0 - a) * gap
+        return (a * pool + (1.0 - a) * gap).to(dtype=feat.dtype)

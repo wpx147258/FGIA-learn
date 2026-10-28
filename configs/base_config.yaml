@@ -46,14 +46,31 @@ MODEL:
   # se_gate 只在最终特征图上做一次乘性残差门控，作为更轻的对照。
   se_gate: false
   # 软空间注意力池化（TokenLearner）：学 S 张空间权重图，各得一 token，平均后与 GAP 相加。
-  # 与 attn_pool 的区别：不改 token 之间的关系，只改聚合方式。输出层零初始化。
+  # 默认只改聚合方式；tl_attn_depth>0 时还会让部件 token 交互。输出层零初始化。
   tokenlearner: false
   tl_tokens: 8
   tl_dim: 256
-  # 防塌缩：不加约束时熵会掉到 0.004（8 张图全塌成单点）。目标熵取 2 左右
-  # （均匀 = ln196 = 5.28，单点 = 0），并惩罚 8 张图之间的重叠。
+  # ---- 防塌缩：单图集中程度与图间差异，使用以下三项约束（2026-10-29 修正）----
+  # 1) ent_target：匹配单张图的目标熵。均匀覆盖 k 个位置时 H=ln k；
+  #    一般分布的 exp(H) 是有效位置数，不等于实际覆盖数量，也不保证空间连续。
+  #    目标 2.0~2.5（约 7.4~12.2 个有效位置）可作为实验起点；均匀 196 个位置时 H≈5.28。
+  #    它不约束 S 张图是否相同。
+  # 2) js_w / js_target：当每张图片的图对平均 JS 低于目标时惩罚，不保证每一对都达标。
+  #    JS 使用自然对数：分布相同为 0，支撑完全不重叠为 ln2≈0.693。
+  #    仅对支撑大小相同的均匀分布，共享一半支撑才对应 JS≈0.35；一般不代表重叠比例。
+  #    js_target 0.30~0.40、js_w 0.5 可作为实验起点，效果需验证。
+  # 3) div_w：图间内积重叠惩罚。旧 einsum 输出 [B,S,N]，未计算图间重叠，且未乘 div_w；
+  #    旧正则可能影响梯度，但不符合设计。现已改为 w^T w 并乘 div_w。
+  #    相同的均匀图内积也仅为 1/N；若需判断分布是否相同，可观察 JS。
   tl_ent_target: 0.0
+  tl_js_w: 0.0
+  tl_js_target: 0.35
   tl_div_w: 0.0
+  # TokenLearner 内部：S 个 token 之间是否做自注意力（0=不做，保持旧行为），以及读出方式。
+  # readout="cls" 与 AttnPool 对齐：用 token 均值当全局 token 拼在最前面，过完注意力读它。
+  tl_attn_depth: 0
+  tl_attn_heads: 4
+  tl_readout: mean
   # CNN 特征图 -> token 序列 -> 轻量自注意力（综述 V-D 的「部位间相互依赖」）。
   # 输出与 GAP 同维并相加，输出层零初始化 => 训练第 0 步与基线逐位等价。
   # attn_tokens：49 = 先 2x2 平均池化成 7x7；196 = 直接用 14x14。
@@ -73,7 +90,7 @@ MODEL:
   gc_dropout: 0.0
   gc_pos: true
   # GAP 初始化的内容注意力池化（model/attn_pool.py:ContentPool）。替换全局池化，
-  # 初始时逐位等于 GAP，但注意力权重从第 0 步就能拿到梯度。
+  # 仅 q 零初始化、Wk 保持随机：初始数学上等于 GAP，第一步 q 可学习，随后 Wk 可学习。
   content_pool: false
   content_rank: 64
   # 部件提取 + 部件间自注意力（model/part_attn.py，综述 [70]–[76] 的融合器换成注意力）。
@@ -128,6 +145,8 @@ MODEL:
   # 部件分支与主干解耦（detach 特征）：逐部件 CE 不回传到 backbone
   pa_detach: false
   # 通道分组顺序：留空 = 连续切分；给一个 perm.npy 则按相关性聚类重排后再分组
+  pa_js_w: 0.0
+  pa_js_target: 0.35
   pa_perm:
   # 检测器卷积核：1 = 逐点线性（旧口径）；3/5 带空间上下文，掩码才可能局部
   pa_kernel: 1

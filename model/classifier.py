@@ -786,7 +786,12 @@ def build_model(cfg: dict) -> Classifier:
             s_tokens=int(mcfg.get("tl_tokens", 8)),
             dropout=float(mcfg.get("dropout", 0.0)),
             ent_target=float(mcfg.get("tl_ent_target", 0.0)),
-            div_w=float(mcfg.get("tl_div_w", 0.0)))
+            div_w=float(mcfg.get("tl_div_w", 0.0)),
+            js_w=float(mcfg.get("tl_js_w", 0.0)),
+            js_target=float(mcfg.get("tl_js_target", 0.35)),
+            attn_depth=int(mcfg.get("tl_attn_depth", 0)),
+            attn_heads=int(mcfg.get("tl_attn_heads", 4)),
+            readout=str(mcfg.get("tl_readout", "mean")))
 
     attn_pool = None
     if mcfg.get("attn_pool", False):

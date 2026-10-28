@@ -44,7 +44,8 @@ class PartAttention(nn.Module):
                  compete: bool = False, norm_spatial: bool = False,
                  num_classes: int = 0, grouped: bool = False,
                  res_scale: float = 0.0, no_residual: bool = False,
-                 detach_feat: bool = False, perm_path: str = "", kernel: int = 1):
+                 detach_feat: bool = False, perm_path: str = "", kernel: int = 1,
+                 js_w: float = 0.0, js_target: float = 0.35):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -70,6 +71,12 @@ class PartAttention(nn.Module):
         # 等于用一条反相关的通道把主特征削掉 28%；res_scale>0 时把残差范数固定成
         # GAP 范数的 res_scale 倍（缩放系数 detach，不参与梯度）。
         self.res_scale = float(res_scale)
+        # JS 正则（与 TokenLearner 同一套标尺）：N=196 时 JS=0.693 表示支撑完全不重叠，
+        # 0.35 表示最多重合一半，0 表示同一个分布。hinge 形式只惩罚「太像」。
+        # 为什么不用内积：w 是概率分布，两张「都偏均匀」的图内积天然很小（1/N 量级），
+        # 会把「同一张均匀图」误判成「不重叠」；JS 不会。
+        self.js_w = float(js_w)
+        self.js_target = float(js_target)
         # 完全去掉残差：部件证据改走 logit 级融合（见 Classifier 的 pa_logit_fuse）
         self.no_residual = bool(no_residual)
         # 部件分支与主干解耦：检测器/池化只看 detach 后的特征，逐部件 CE 不再回传
@@ -184,6 +191,16 @@ class PartAttention(nn.Module):
             dis = (m * dist2).sum(-1).mean() / (h * w)
             self._last_div = (self._last_balance if self.compete
                               else dis + 2.0 * div)
+            if self.js_w > 0 and k > 1:
+                # 两两 JS：p_k 与 p_m 在位置维 N 上比较
+                mm = (a[:, :, None, :] + a[:, None, :, :]) / 2.0   # [B,K,K,N]
+                la = a.clamp_min(1e-9).log()[:, :, None, :]        # [B,K,1,N]
+                lm = mm.clamp_min(1e-9).log()
+                kl1 = (a[:, :, None, :] * (la - lm)).sum(-1)       # [B,K,K]
+                js = 0.5 * (kl1 + kl1.transpose(1, 2))
+                off_ = 1.0 - torch.eye(k, device=a.device)
+                js_off = (js * off_).sum(dim=(1, 2)) / (k * (k - 1))
+                self._last_div = self._last_div + self.js_w * (self.js_target - js_off).clamp_min(0).mean()
         else:
             self._last_div = torch.zeros((), device=m.device)
 
@@ -292,6 +309,8 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),
         kernel=int(mcfg.get("pa_kernel", 1)),
+        js_w=float(mcfg.get("pa_js_w", 0.0)),
+        js_target=float(mcfg.get("pa_js_target", 0.35)),
     )
     try:
         p = next(backbone.parameters())
