@@ -63,6 +63,8 @@ def build_dataloaders(cfg: dict, backbone,
         if v.strip())
     if extra_views:
         use_parts = True
+    # 额外部位视图的分辨率：更小以省显存（见 CUBDataset 的说明）
+    part_size = int(cfg["TRAIN"].get("cam_part_size") or 224)
 
     # 成对判别要求批内有同类样本，随机采样给不了 —— 换成 P×K 批采样器。
     # TRAIN.pk_sampler 可以单独打开，用来做「只换采样、不加成对损失」的对照：
@@ -87,6 +89,9 @@ def build_dataloaders(cfg: dict, backbone,
                                            train=is_train, tcfg=tcfg, mild=True),
             # 只有训练需要这些额外视图；评估时算它们是纯浪费（测试不走辅助分支）
             extra_views=extra_views if is_train else (),
+            part_transform_extra=(
+                build_transform(data_cfg, part_size, train=is_train, tcfg=tcfg, mild=True)
+                if (is_train and extra_views) else None),
         )
         # 把 val 并进训练：val 本来就是从官方 train 里切出来的，合回去就是完整的
         # 5994 张。只改 data_ids，路径/标签/部位框都是按 image_id 查表的，自动对得上。

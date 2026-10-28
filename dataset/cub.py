@@ -53,7 +53,8 @@ class CUBDataset(Dataset):
 
     def __init__(self, data_root, split: str, transform, num_classes: int,
                  use_parts: bool = False, part_transform=None,
-                 part_pad: float = 0.35, extra_views: tuple = ()):
+                 part_pad: float = 0.35, extra_views: tuple = (),
+                 part_transform_extra=None):
         super().__init__()
         self.root = Path(data_root)  # ./data/CUB-200-2011
         self.transform = transform
@@ -66,8 +67,11 @@ class CUBDataset(Dataset):
         self.use_parts = use_parts
         self.part_transform = part_transform or transform
         self.part_pad = part_pad
-        # 额外部位视图（"wing" / "tail"）：只在开启时才裁，省掉不需要的开销。
-        self.extra_views = tuple(v for v in extra_views if v in ("wing", "tail"))
+        # 额外部位视图（"wing" / "tail" / "body"）：只在开启时才裁，省掉不需要的开销。
+        self.extra_views = tuple(extra_views)
+        # 额外视图默认用更低的分辨率（显存）：它们只是训练期的辅助监督，
+        # 裁剪本身已经放大了局部，448 与 224 的有效细节差别远小于省下的激活。
+        self.part_transform_extra = part_transform_extra or self.part_transform
         if use_parts:
             self.parts = self.get_parts(self.root / "parts" / "part_locs.txt")
             self.bboxes = self.get_bboxes(self.root / "bounding_boxes.txt")
@@ -181,6 +185,7 @@ class CUBDataset(Dataset):
                 sample["body"] = self.part_transform(img.crop(body_box))
                 if self.extra_views:
                     extra = self._extra_part_boxes(image_id, W, H, body_box)
+                    boxes = {"head": head_box, "body": body_box, **extra}
                     for name in self.extra_views:
-                        sample[name] = self.part_transform(img.crop(extra[name]))
+                        sample[name] = self.part_transform_extra(img.crop(boxes[name]))
         return sample
