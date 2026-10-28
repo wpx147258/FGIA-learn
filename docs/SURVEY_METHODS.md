@@ -127,7 +127,7 @@ Table 2 的鸟榜数字是论文原文，训练集口径各不相同（有的用
 | HSnet [71] | CVPR 2017 | GoogLeNet | 224 | 87.5 |
 | TSC [72] | AAAI 2017 | VGG-16 | — | 84.7 |
 | Mask-CNN [31] | PR 2018 | VGG-16 | 448 | 85.7 |
-| Ge [73] | CVPR 2019 | GoogLeNet+BN | 800 | **90.3**（用 parts） |
+| Ge [73] | CVPR 2019 | GoogLeNet+BN | 800 | **90.3**（⚠️ **不是**关键点监督：原文明确 "without any parts annotations"，用 Mask R-CNN + CRF 弱监督；不能拿来支持「关键点能到 90」） |
 | GCL [74] | AAAI 2020 | ResNet-50 | 448 | 88.3 |
 | FDL [75] | AAAI 2020 | ResNet-50 | 448 | 88.6 |
 | Two-level atten. [76] | CVPR 2015 | VGG-16 | — | 77.9 |
@@ -262,7 +262,7 @@ crop 单独救回 71 张、global 独有 309 张，两路都错 579 张。「测
 | [76] | Xiao et al., CVPR'15 两级注意力 | 深度滤波器做谱聚类 → 滤波器组当部件检测器 | 各部件特征拼接 | 单次前向 | 77.9 (VGG16) |
 | [70] | Zhang et al., TIP'16 | 物体提议 + 空间金字塔 → 提议聚类成部件原型 | 选判别原型后拼接 | 提议需多次裁剪 | 78.9 (AlexNet) |
 | [72] | He & Peng, AAAI'17 | 部件选择 + 部件间空间约束（相对位置） | 空间约束下的选择 | 单次前向 | 84.7 (VGG16) |
-| [73] | Ge et al., CVPR'19 | Mask R-CNN + CRF 先抠物体，再自底向上找互补部件 | 双向 LSTM | 多阶段，依赖外部模型 | 90.3 (GoogLeNet+BN, 800) |
+| [73] | Ge et al., CVPR'19 | Mask R-CNN + CRF 先抠物体，再自底向上找互补部件 | 双向 LSTM | 多阶段，依赖外部模型 | 90.3 (GoogLeNet+BN, 800)；**训练不用 parts 标注** |
 | [74] | Wang et al., AAAI'20 (GCL) | 判别区域组 | **十字交叉图传播**（同行/同列区域互看）+ 相关性强化 | 单次前向 | 88.3 (R50, 448) |
 | [75] | Liu et al., AAAI'20 (FDL) | RPN 提区域，用「提议-预测匹配度」过滤 | 区域特征从物体特征**蒸馏** | 单次前向（带 RPN） | 88.6 (R50, 448) |
 | [71] | Lam et al., CVPR'17 (HSnet) | LSTM 串行搜索有用部件 | LSTM | **多步，测试多次前向** | — |
