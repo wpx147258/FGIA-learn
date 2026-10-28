@@ -307,6 +307,7 @@ def build_criterion(cfg: dict) -> nn.Module:
             # 逐 token 辅助 CE（TokenLearner replace 出口）：每个部件都要能单独分类
             "logits_tl":    t.get("tl_aux_w", 0.0),
             # 训练期特权裁剪的额外部位视图（wing/tail/body），各自接硬标签 CE
+            "logits_head":  t.get("cam_part_w", 0.0),
             "logits_body":  t.get("cam_part_w", 0.0),
             "logits_wing":  t.get("cam_part_w", 0.0),
             "logits_tail":  t.get("cam_part_w", 0.0),
@@ -324,6 +325,7 @@ def build_criterion(cfg: dict) -> nn.Module:
         },
         hard_label_aux=tuple(
             k for k, on in (("logits_crop", t.get("cam_crop_hard_label", False)),
+                            ("logits_head", bool(t.get("cam_part_views"))),
                             ("logits_body", bool(t.get("cam_part_views"))),
                             ("logits_wing", bool(t.get("cam_part_views"))),
                             ("logits_tail", bool(t.get("cam_part_views"))))
