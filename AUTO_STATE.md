@@ -81,3 +81,9 @@
        → 远程已启动 batch6（组合与收尾：部位一致性 / pad08+翅 / pad08+AttnPool / 一致性 0.4）。
 [07:48] gth_pad08_w04（裁剪 CE 0.4）88.61（−0.45），比 CE 0.2 的 88.87 差 0.26。→ GT 头视图
        权重不该超过基线 CAM 框的 0.2。特权裁剪家族的最好成绩仍是 88.87（−0.19，n.s.）。
+[07:53] 发现并修复一个启动即崩的 bug：`MODEL.attn_dropout: null` 时
+       `float(mcfg.get("attn_dropout", mcfg.get("dropout", 0.0)))` 返回 None 而崩
+       （.get 的默认值只在键不存在时生效，键存在但为 null 时不生效）。
+       batch6 的 r50_gth_pad08_attn 因此没跑起来，已在 GPU2 单独重启（其余三格正常）。
+       本地 queueTT 的 cam_head_pc 已在 07:49 起跑（之前的 watcher 有 80 分钟上限，
+       超时退出导致 GPU 空了几分钟——之后 watcher 一律给足时长）。
