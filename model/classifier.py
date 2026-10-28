@@ -560,7 +560,10 @@ class Classifier(nn.Module):
         use_cam = self.cam_aux is not None
         # CutMix 把画面抹掉一块，CAM 会框到残留的碎片上，裁出来的东西没有语义。
         # 这批直接跳过 CAM 分支（MixUp 的 batch 照常做，叠影不破坏结构）。
-        if batch is not None and batch.get("mix_mode") == "cutmix":
+        # ⚠️ gt_head 教师不受影响：头部图是从**原图**裁的（dataset 侧），与混合后的主图无关；
+        # 若也跳过，crop 分支只在 30% 的 batch 上训练，等于把监督砍掉七成。
+        gt_head = getattr(self.cam_aux, "teacher", "cam") == "gt_head"
+        if batch is not None and batch.get("mix_mode") == "cutmix" and not gt_head:
             use_cam = False
         use_attn = self.attn_aux is not None
         use_pair = self.pair_aux is not None
