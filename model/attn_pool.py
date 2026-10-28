@@ -208,9 +208,20 @@ class TokenLearner(nn.Module):
         )
         self.norm = nn.LayerNorm(dim)
         self.replace = bool(replace)
+        if readout not in ("mean", "cls", "concat"):
+            raise ValueError(f"readout 只能是 mean | cls | concat，收到 {readout!r}")
+        self.cat = None
         if self.replace:
-            if int(attn_depth) > 0 or readout != "mean":
-                raise ValueError("TokenLearner 的 replace 只支持 attn_depth=0 且 readout=mean")
+            # concat 读出：S 个 token 各自投影到 C/S 维，再拼起来（总维仍是 C，
+            # 分类头大小与基线完全相同）。分类头于是能**对每个部件分别加权**，
+            # 而不是先把它们平均掉 —— 这是 mean 读出不具备的信息通道。
+            if int(attn_depth) > 0 or readout not in ("mean", "concat"):
+                raise ValueError("TokenLearner 的 replace 只支持 attn_depth=0 且 readout=mean|concat")
+            if readout == "concat":
+                if in_channels % self.s != 0:
+                    raise ValueError(
+                        f"readout=concat 要求通道数 {in_channels} 能被 S={self.s} 整除")
+                self.cat = nn.Linear(in_channels, in_channels // self.s)
             # 替换式池化：学到的空间权重直接作用在 C 维原始特征上，输出就在 C 空间。
             # score 末层置零 => 初始权重均匀 => 输出逐位等于 GAP（唯一能精确做到的结构）。
             self.out = None
@@ -260,8 +271,6 @@ class TokenLearner(nn.Module):
         # 部件 token 之间做自注意力（0 = 不做，保持旧行为）。
         # readout="cls" 与 AttnPool 对齐：用「token 均值」当全局 token 拼在最前面，
         # 过完注意力后读它自己 —— 两种池化机制可以形成干净对照。
-        if readout not in ("mean", "cls"):
-            raise ValueError(f"readout 只能是 mean | cls，收到 {readout!r}")
         self.readout = readout
         self.attn_depth = int(attn_depth)
         if attn_depth > 0:
@@ -332,6 +341,9 @@ class TokenLearner(nn.Module):
             f_c = feat.flatten(2).transpose(1, 2)                # [B,N,C]
             z_c = torch.einsum("bns,bnc->bsc", w, f_c)           # [B,S,C]
             self._last_z = z_c
+            if self.cat is not None:
+                # [B,S,C] -> [B,S,C/S] -> [B,C]：部件各自占一段通道，分类头可分别加权
+                return self.cat(z_c).reshape(z_c.shape[0], -1)
             return z_c.mean(dim=1)
         return self.out(v)
 
