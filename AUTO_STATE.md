@@ -54,3 +54,9 @@
        评估路径不经过。抽样核对过 head/body/wing/tail 的裁剪图，几何正确。
        远程 batch4 已换成四格：gt_head / +body / +wing / +wing+tail（原 concat 轮存档为
        scripts/remote_batch4_concat_later.sh，按审查意见暂缓：concat−mean 只有 +0.20）。
+[05:00] batch4 定为「单视图 gt_head 的四种配置」而不是多部位：显存账算不过来。
+       bs2/448 四路前向实测峰值 3.37GiB，按此推算 bs16 会到 12GB 上限附近；
+       基线两路前向就已 8.6GB。多部位版要么梯度累积（micro-batch 8×2）、要么
+       给辅助分支上 checkpoint（但 BN 统计会被重算两次），都先不动，等单视图结果。
+       batch4 = hl / soft / c05 / nocons，与本地 queueRR 完全同名同参 → 两边合起来
+       就是一配置两 seed，正好量 seed 方差。
