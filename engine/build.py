@@ -30,6 +30,7 @@ class ClassificationCriterion(nn.Module):
                  distill_w: float = 0.0, distill_T: float = 2.0,
                  distill_min_conf: float = 0.0, distill_gate_label: bool = False,
                  tl_reg_w: float = 0.0, pa_div_w: float = 0.0, part_cons_w: float = 0.0,
+                 part_view_cons_w: float = 0.0,
                  strong_kl: float = 0.0, strong_T: float = 2.0):
         super().__init__()
         self.ce = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
@@ -63,6 +64,8 @@ class ClassificationCriterion(nn.Module):
         # 平均余弦重叠，这里只乘权重。
         self.pa_div_w = float(pa_div_w)
         self.part_cons_w = float(part_cons_w)
+        # 额外部位视图与主分支的一致性（与 pta_cons_w 不是一回事，别混）
+        self.part_view_cons_w = float(part_view_cons_w)
         # 强视图：CE 权重（1.0 = 只当更强的增强）与非对称 KL 权重（教师是主分支、detach）
         self.strong_ce = float(strong_ce)
         self.strong_kl = float(strong_kl)
@@ -219,6 +222,24 @@ class ClassificationCriterion(nn.Module):
             kl = ((m.exp() * (m - c)).sum(1) + (c.exp() * (c - m)).sum(1)).mean() * 0.5
             loss = loss + self.consistency_w * kl * T * T
             logs["consistency"] = float(kl.detach())
+        # 部位视图的一致性：主分支 vs 每一路 GT 部位（head/wing/tail/body）。
+        # 与 cam_crop 的 consistency 同一个算子、同一个温度，只是作用在额外的视图上。
+        # 实测（batch4）裁剪分支的价值主要来自一致性（0.3 最好、0 显著更差），
+        # 所以多路视图也应该有这条约束，而不是只有 CE。
+        if self.part_view_cons_w > 0:
+            T = self.consistency_T
+            m = F.log_softmax(out["logits"].float() / T, dim=1)
+            acc = []
+            for k in ("logits_head", "logits_body", "logits_wing", "logits_tail"):
+                if k in out:
+                    c = F.log_softmax(out[k].float() / T, dim=1)
+                    kl = ((m.exp() * (m - c)).sum(1)
+                          + (c.exp() * (c - m)).sum(1)).mean() * 0.5
+                    acc.append(kl)
+            if acc:
+                kl = torch.stack(acc).mean()
+                loss = loss + self.part_view_cons_w * kl * T * T
+                logs["part_consistency"] = float(kl.detach())
         if self.consistency2_w > 0 and "logits_crop2" in out:
             T = self.consistency_T
             m = F.log_softmax(out["logits"].float() / T, dim=1)
@@ -347,6 +368,7 @@ def build_criterion(cfg: dict) -> nn.Module:
         tl_reg_w=t.get("tl_reg_w", 0.0),
         pa_div_w=t.get("pa_div_w", 0.0),
         part_cons_w=t.get("pta_cons_w", 0.0),
+        part_view_cons_w=t.get("cam_part_cons", 0.0),
         strong_ce=t.get("strong_ce", 0.0),
         strong_kl=t.get("strong_kl", 0.0),
         strong_T=t.get("strong_T", 2.0),
