@@ -194,7 +194,7 @@ class TokenLearner(nn.Module):
     def __init__(self, in_channels: int = 2048, out_dim: int = 2048, dim: int = 256,
                  s_tokens: int = 8, dropout: float = 0.0,
                  ent_target: float = 0.0, div_w: float = 0.0,
-                 js_w: float = 0.0, js_target: float = 0.35,
+                 js_w: float = 0.0, js_target: float = 0.35, js_reduce: str = "mean",
                  ent_mode: str = "target", ent_floor: float = 0.5,
                  attn_depth: int = 0, attn_heads: int = 4,
                  readout: str = "mean", replace: bool = False):
@@ -248,6 +248,15 @@ class TokenLearner(nn.Module):
         # 共享 25% / 50% 支撑才分别对应约 0.52 / 0.35，不能推广为一般的重叠比例。
         self.js_w = float(js_w)
         self.js_target = float(js_target)
+        # js_reduce 决定「图对平均」在 hinge 的内侧还是外侧：
+        #   "mean"（旧行为）—— hinge(mean_ij JS_ij − target)。均值可以被少数差异很大的
+        #       图对抬上去，剩下的图对即使完全相同也不受惩罚。实测 tl_floor 的
+        #       train_tl_reg 到 ep15 就掉到 1e-4，正是这条捷径。
+        #   "pair"—— mean_i hinge(mean_{j≠i} JS_ij − target)。每一张图都要和其余图
+        #       拉开，不能靠两三张图把平均顶上去。
+        if js_reduce not in ("mean", "pair"):
+            raise ValueError(f"js_reduce 只能是 mean | pair，收到 {js_reduce!r}")
+        self.js_reduce = js_reduce
         # 部件 token 之间做自注意力（0 = 不做，保持旧行为）。
         # readout="cls" 与 AttnPool 对齐：用「token 均值」当全局 token 拼在最前面，
         # 过完注意力后读它自己 —— 两种池化机制可以形成干净对照。
@@ -307,9 +316,15 @@ class TokenLearner(nn.Module):
             kl1 = (w[:, :, :, None] * (lw - lm)).sum(1)          # [B,S,S]
             js = 0.5 * (kl1 + kl1.transpose(1, 2))
             off_ = 1.0 - torch.eye(js.size(1), device=js.device)
-            # 先排除自身比较并平均图对，再做 hinge；部分相似图对可被差异较大的图对抵消。
-            js_off = (js * off_).sum(dim=(1, 2)) / (js.size(1) * (js.size(1) - 1))
-            jr = self.js_w * (self.js_target - js_off).clamp_min(0).mean()
+            if self.js_reduce == "pair":
+                # 每张图与其余图的平均 JS 各自过 hinge 再平均：每张图都要被拉开，
+                # 不能靠少数图对把整体均值顶上去（旧写法在这点上可以被绕过）。
+                per_map = (js * off_).sum(dim=2) / max(js.size(1) - 1, 1)   # [B,S]
+                jr = self.js_w * (self.js_target - per_map).clamp_min(0).mean()
+            else:
+                # 旧行为：先排除自身比较并平均图对，再做 hinge。
+                js_off = (js * off_).sum(dim=(1, 2)) / (js.size(1) * (js.size(1) - 1))
+                jr = self.js_w * (self.js_target - js_off).clamp_min(0).mean()
             reg = jr if reg is None else reg + jr
         self._reg = reg
         if self.replace:

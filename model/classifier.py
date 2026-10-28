@@ -833,6 +833,7 @@ def build_model(cfg: dict) -> Classifier:
             div_w=float(mcfg.get("tl_div_w", 0.0)),
             js_w=float(mcfg.get("tl_js_w", 0.0)),
             js_target=float(mcfg.get("tl_js_target", 0.35)),
+            js_reduce=str(mcfg.get("tl_js_reduce", "mean")),
             attn_depth=int(mcfg.get("tl_attn_depth", 0)),
             attn_heads=int(mcfg.get("tl_attn_heads", 4)),
             readout=str(mcfg.get("tl_readout", "mean")),

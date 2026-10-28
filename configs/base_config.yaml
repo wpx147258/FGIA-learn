@@ -68,6 +68,10 @@ MODEL:
   tl_ent_floor: 0.5
   tl_js_w: 0.0
   tl_js_target: 0.35
+  # JS 的聚合方式：mean = hinge(图对平均 JS)（旧行为，可被少数差异大的图对顶上去）；
+  # pair = 每张图与其余图的平均 JS 各自过 hinge（每张图都必须被拉开）。
+  # 实测 tl_floor 的 train_tl_reg 到 ep15 就掉到 1e-4，说明旧写法可以被满足得很便宜。
+  tl_js_reduce: mean
   tl_div_w: 0.0
   # TokenLearner 内部：S 个 token 之间是否做自注意力（0=不做，保持旧行为），以及读出方式。
   # readout="cls" 与 AttnPool 对齐：用 token 均值当全局 token 拼在最前面，过完注意力读它。
