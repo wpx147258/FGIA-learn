@@ -47,8 +47,13 @@ def pair_metrics(w):
     iou = inter / union.clamp_min(1)
     off = torch.ones(s, s, device=w.device) - torch.eye(s, device=w.device)
     sel = off.bool()
+    # 每张图与其余图的平均 JS：均值达标不代表每张图都分化（两三张拉开、其余是副本
+    # 也能把图对均值顶到 js_target 以上）。这里把分布也报出来。
+    per_map = (js * off).sum(-1) / max(s - 1, 1)               # [B,S]
+    frac_low = (per_map < 0.15).float().mean().item()           # 近似「副本图」占比
     return (ent.mean().item(), ov[:, sel].mean().item(), cosc[:, sel].mean().item(),
-            js[:, sel].mean().item(), iou[:, sel].mean().item(), n)
+            js[:, sel].mean().item(), iou[:, sel].mean().item(), n,
+            per_map.min().item(), per_map.median().item(), per_map.max().item(), frac_low)
 
 
 def main():
@@ -82,7 +87,7 @@ def main():
             rows.append(pair_metrics(w.float()))
             seen += x.shape[0]
             if seen >= a.n: break
-    mean = [sum(r[i] for r in rows) / len(rows) for i in range(5)]
+    mean = [sum(r[i] for r in rows) / len(rows) for i in range(10)]
     n_pos = rows[0][5]
     print(f"checkpoint: {a.checkpoint}")
     print(f"  N={n_pos} 位置, S={w.shape[-1]} 张图, 均匀熵上界 lnN={math.log(n_pos):.3f}")
@@ -91,6 +96,8 @@ def main():
     print(f"  cos_center   {mean[2]:.4f}   (0 表示去掉公共成分后完全不像)")
     print(f"  JS           {mean[3]:.4f}   (上界 ln2={math.log(2):.3f})")
     print(f"  iou_top5%    {mean[4]:.4f}")
+    print(f"  每图平均JS   min={mean[6]:.3f} median={mean[7]:.3f} max={mean[8]:.3f}"
+          f"   <0.15 的图占比 {mean[9]:.3f}  (高 = 有图是副本)")
 
 
 if __name__ == "__main__":
