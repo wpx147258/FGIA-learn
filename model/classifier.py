@@ -653,7 +653,11 @@ class Classifier(nn.Module):
             # 逐 token 辅助 CE（MA-CNN 式部件损失）：每个学到的部件 token 都要单独
             # 认对类别。它把「往背景上飘」这条路堵死——背景特征不可能单独分类；
             # 同时不阻止 token 之间分化（那是 JS 项的职责），两者互补。
-            out["logits_tl"] = self.head(self.tokenlearner._last_z)   # [B,S,num_classes]
+            # 先展平成 [B*S,C] 再过分类头：head 可能带 BatchNorm1d，直接喂 [B,S,C]
+            # 会把 S 当成通道维、静默算错（head_norm=true 时）。
+            z = self.tokenlearner._last_z                    # [B,S,C]
+            bz, sz, cz = z.shape
+            out["logits_tl"] = self.head(z.reshape(bz * sz, cz)).reshape(bz, sz, -1)
         if self.part_train_aux and self.training and y is not None:
             pa = getattr(self.backbone, "part_attn", None)
             if pa is not None:
