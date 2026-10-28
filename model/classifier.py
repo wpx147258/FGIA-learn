@@ -8,6 +8,8 @@ from model.backbone import build_backbone
 from model.cam_aug import build_cam_aux, cam_map, crop_and_resize, mask_to_box, peak_mask
 from model.fpn import build_fpn
 from model.global_ctx import build_global_context
+from model.mge import build_mge
+from model.regions import RegionRouter, propose_regions, routing_features
 from model.part_attn import build_part_attention
 from model.head import HEADS
 from model.pair import PairAux
@@ -39,7 +41,11 @@ class Classifier(nn.Module):
                  pta_parts: int = 2, pta_margin: float = 1.3, pta_alpha: float = 0.6,
                  pta_cons_w: float = 0.0, pta_cons_T: float = 2.0,
                  pta_use_cam: bool = False, pta_cam_alpha: float = 0.2,
-                 pa_logit_fuse: bool = False, pa_parts: int = 4, pa_veto: bool = False):
+                 pa_logit_fuse: bool = False, pa_parts: int = 4, pa_veto: bool = False,
+                 pa_veto_tau: float = 0.0, freeze_backbone: bool = False,
+                 mge=None, region_route: bool = False, rr_regions: int = 2,
+                 rr_alpha: float = 0.2, rr_margin: float = 1.3,
+                 rr_hidden: int = 64, rr_size: int = 448):
         super().__init__()
         self.backbone = backbone
         self.head = head
@@ -70,6 +76,25 @@ class Classifier(nn.Module):
         # 置信度高于主分支，就把该类的 logit 抬上去。零参数、零额外前向、不改训练。
         # 离线分析（scripts/probe_part_gate.py）：pa4 上触发 26 张，改对 17 改错 5。
         self.pa_veto = bool(pa_veto)
+        # τ>0 时用 Chow 式的「主分支不确定才否决」：主分支 max prob < τ 且部件全一致
+        # 指向另一个类才改判。离线实测（pa4 权重）：触发子集上主分支只有 5% 对、
+        # 否决 74% 对；τ 在 0.3–0.5 之间结果稳定（89.32–89.37）。
+        self.pa_veto_tau = float(pa_veto_tau)
+        self.freeze_backbone = bool(freeze_backbone)
+        # 多粒度专家（layer2/3/4 GAP + layer4 GMP），只用于训练期辅助 CE；
+        # 测试时可以当否决票（离线分析），不影响主分支输出。
+        self.mge = mge
+        # 多区域重编码 + 学习式路由（见 model/regions.py）。
+        # 测试 1+K 次前向；初始化时 fused = main（router 输出零 + gamma 0）。
+        self.region_route = bool(region_route)
+        self.rr_regions = int(rr_regions)
+        self.rr_alpha = float(rr_alpha)
+        self.rr_margin = float(rr_margin)
+        self.rr_size = int(rr_size)
+        if self.region_route:
+            fd = int(getattr(backbone, "num_features"))
+            in_dim = 3 + self.rr_regions * 4
+            self.region_router = RegionRouter(in_dim, self.rr_regions, hidden=int(rr_hidden))
         self.pa_logit_fuse = bool(pa_logit_fuse)
         if self.pa_logit_fuse:
             self.pa_beta = nn.Parameter(torch.zeros(int(pa_parts)))
@@ -167,6 +192,30 @@ class Classifier(nn.Module):
             return None
         return (pa._last_part_logits, pa._last_div)
 
+    def _forward_region_route(self, x: torch.Tensor):
+        """整图 + K 个 CAM 区域重编码，逐样本路由融合。"""
+        feat = self.backbone.forward_features(x)
+        pooled = self.backbone.forward_head(feat)
+        logits = self.head(pooled)
+        fm = self._to_feature_map(feat)
+        topk = logits.detach().float().topk(self.rr_regions, dim=1).indices
+        w = self.head.cam_weight(fm.shape[1]).detach()
+        rl, rf = [], []
+        for i in range(self.rr_regions):
+            cam = cam_map(fm.float(), w, topk[:, i])
+            boxes = propose_regions(cam, self.rr_alpha)
+            patch = crop_and_resize(x, boxes, self.rr_size, self.rr_margin)
+            f = self.backbone.forward_features(patch)
+            rf.append(self.backbone.forward_head(f))
+            rl.append(self.head(rf[-1]))
+        rl = torch.stack(rl, dim=1)                        # [B,K,C]
+        rf = torch.stack(rf, dim=1)                        # [B,K,D]
+        feats = routing_features(logits, rl, pooled, rf)
+        fused, route_w = self.region_router.fuse(logits, rl, feats)
+        if not self.training:
+            return fused
+        return {"logits": fused, "logits_region": rl, "route_w": route_w.detach()}
+
     def _pa_veto(self, logits: torch.Tensor) -> torch.Tensor:
         """一致否决：K 个部件全体同意的类与主分支不同时，按置信度决定是否改判。"""
         pa = getattr(self.backbone, "part_attn", None)
@@ -180,7 +229,10 @@ class Classifier(nn.Module):
             agree = (pp.argmax(-1) == vote[:, None]).all(dim=1)
             conf_v = pp.gather(2, vote[:, None, None].expand(-1, k, 1)).mean(1).squeeze(-1)
             conf_m = logits.float().softmax(-1).max(1).values
-            use = agree & (vote != logits.argmax(1)) & (conf_v > conf_m)
+            if self.pa_veto_tau > 0:
+                use = agree & (vote != logits.argmax(1)) & (conf_m < self.pa_veto_tau)
+            else:
+                use = agree & (vote != logits.argmax(1)) & (conf_v > conf_m)
         out = logits.clone()
         if use.any():
             out[torch.arange(out.shape[0], device=out.device)[use], vote[use]] += 1e3
@@ -449,6 +501,8 @@ class Classifier(nn.Module):
                 return out
             return logits
 
+        if self.region_route:
+            return self._forward_region_route(x)
         if self.hyp_fuse:
             return self._forward_hyp_fuse(x)
         if self.part_rerank:
@@ -544,6 +598,7 @@ class Classifier(nn.Module):
             pooled = pooled + self.tokenlearner(feat)
             if self.tokenlearner._reg is not None:
                 out_reg = self.tokenlearner._reg
+        mge_logits = self.mge() if self.mge is not None else None
         logits = self.head(pooled)
         if self.pa_logit_fuse:
             logits = self._pa_logit_fuse(logits)
@@ -551,6 +606,8 @@ class Classifier(nn.Module):
             logits = self._pa_veto(logits)
 
         out = {"logits": logits}
+        if mge_logits is not None:
+            out["logits_mge"] = mge_logits
         if self.pa_logit_fuse and getattr(self.backbone, "part_attn", None) is not None:
             # logit 级融合时，逐部件 CE 用**权重绑定**的那套 logits（_pa_logit_fuse 里写回），
             # 而不是模块自带的独立 part_cls —— 否则两套头并存，又回到「证据与出口解耦」。
@@ -639,6 +696,14 @@ def build_model(cfg: dict) -> Classifier:
                               content_rank=int(mcfg.get("content_rank", 64)),
                               **bkwargs)
 
+    # 冻结骨干（只训练部件分支/头）：部件变成「事后附加」的模块，
+    # 主分支与基线逐位相同，否决票才是真正零代价的。
+    if mcfg.get("freeze_backbone", False):
+        # 骨干（除部件分支）与分类头都冻结：主分支逐位等于基线，
+        # 只有部件检测器 + 部件分类头在训练。
+        for n, prm in backbone.named_parameters():
+            if not n.startswith("part_attn"):
+                prm.requires_grad = False
     # 特征维度从模型自身读，不写死
     feat_dim = backbone.num_features
     # 可选：在 layer3 与 layer4 之间插一层全局自注意力（见 model/global_ctx.py）。
@@ -674,6 +739,9 @@ def build_model(cfg: dict) -> Classifier:
     if head_name == "cbp":
         head_kwargs["dim"] = int(mcfg.get("cbp_dim", 8192))
     head = HEADS[head_name](**head_kwargs)
+    if mcfg.get("freeze_backbone", False):
+        for prm in head.parameters():
+            prm.requires_grad = False
 
     fusion = mcfg.get("fusion", "")
     cam_aux = build_cam_aux(cfg["TRAIN"], cfg["DATASET"]["image_size"])
@@ -692,6 +760,9 @@ def build_model(cfg: dict) -> Classifier:
         head_kwargs = dict(head_kwargs)
         head_kwargs["in_features"] = in_dim
         head = HEADS[head_name](**head_kwargs)
+    if mcfg.get("freeze_backbone", False):
+        for prm in head.parameters():
+            prm.requires_grad = False
 
     # 成对判别（API-Net）。它吃的是 forward_head 之后的池化向量，
     # 所以和三流融合、FPN、吃特征图的头都不兼容 —— 这几种情况直接报错，
@@ -765,6 +836,8 @@ def build_model(cfg: dict) -> Classifier:
     part_rerank = bool(mcfg.get("part_rerank", False))
     if part_rerank and not mcfg.get("part_attn", False):
         raise ValueError("MODEL.part_rerank 需要同时开 MODEL.part_attn（提供部件掩码）")
+    mge = build_mge(backbone, mcfg, cfg["DATASET"]["num_classes"])
+    freeze = bool(mcfg.get("freeze_backbone", False))
     return Classifier(backbone, head, cam_aux, attn_aux, fpn, fusion, pair_aux, pmg,
                       deep_sup, attn_pool, str(mcfg.get("attn_from", "layer4")), se_gate,
                       tokenlearner, cam_fuse=cam_fuse,
@@ -783,6 +856,15 @@ def build_model(cfg: dict) -> Classifier:
                       pa_logit_fuse=bool(mcfg.get("pa_logit_fuse", False)),
                       pa_parts=int(mcfg.get("pa_parts", 4)),
                       pa_veto=bool(mcfg.get("pa_veto", False)),
+                      pa_veto_tau=float(cfg["TRAIN"].get("pa_veto_tau", 0.0)),
+                      freeze_backbone=freeze,
+                      mge=mge,
+                      region_route=bool(mcfg.get("region_route", False)),
+                      rr_regions=int(mcfg.get("rr_regions", 2)),
+                      rr_alpha=float(mcfg.get("rr_alpha", 0.2)),
+                      rr_margin=float(mcfg.get("rr_margin", 1.3)),
+                      rr_hidden=int(mcfg.get("rr_hidden", 64)),
+                      rr_size=int(mcfg.get("rr_size", cfg["DATASET"]["image_size"])),
                       part_train_aux=bool(mcfg.get("part_train_aux", False)),
                       pta_parts=int(mcfg.get("pta_parts", 2)),
                       pta_margin=float(mcfg.get("pta_margin", 1.3)),

@@ -278,6 +278,7 @@ def fit(model, loaders: dict, optimizer, scheduler, criterion, device,
             logger=logger,
             strong_view=bool(cfg["TRAIN"].get("strong_view", False)),
             strong_erase_p=float(cfg["TRAIN"].get("strong_erase_p", 0.0)),
+            clip_parts_separately=bool(cfg["TRAIN"].get("clip_parts_separately", False)),
             teacher=teacher,
         )
         val_metrics = evaluate(
@@ -367,9 +368,14 @@ def train_one_epoch(model, train_loader, optimizer, criterion, device, epoch, *,
                     logger: RunLogger | None = None,
                     strong_view: bool = False,
                     strong_erase_p: float = 0.0,
+                    clip_parts_separately: bool = False,
                     teacher=None) -> dict[str, float]:
     """跑一个 epoch ->  {'loss', 'top1', 'top5'}。"""
     model.train()
+    # 冻结骨干时，BN 必须保持在 eval 模式：否则 running stats 会被训练数据改写，
+    # 「冻结」就名不副实，主分支也不再等于基线。
+    if getattr(model, "freeze_backbone", False) and hasattr(model, "backbone"):
+        model.backbone.eval()
     loss_meter = AverageMeter()
     acc1 = AverageMeter()
     acc5 = AverageMeter()
@@ -402,7 +408,20 @@ def train_one_epoch(model, train_loader, optimizer, criterion, device, epoch, *,
         
         loss.backward()
         if grad_clip > 0: 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+            # 默认沿用「全参数一起裁剪」（与历史实验一致）。
+            # 只有 detach 的部件分支才需要分开裁剪：那时部件对前向完全没有影响，
+            # 混进全局范数会改变裁剪系数、连带改变主分支的每一步更新。
+            # ⚠️ 分开裁剪会把部件梯度的有效预算从「共享 1.0」放大到「独占 1.0」，
+            # 实测（r50_pa_veto2）会让部件损失剧烈震荡，所以默认不开。
+            if clip_parts_separately:
+                pa_params, main_params = [], []
+                for n, prm in model.named_parameters():
+                    (pa_params if n.startswith("backbone.part_attn") else main_params).append(prm)
+                torch.nn.utils.clip_grad_norm_(main_params, grad_clip)
+                if pa_params:
+                    torch.nn.utils.clip_grad_norm_(pa_params, grad_clip)
+            else:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 
     out = {"loss": loss_meter.avg, "top1": acc1.avg, "top5": acc5.avg}

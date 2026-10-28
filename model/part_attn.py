@@ -43,7 +43,8 @@ class PartAttention(nn.Module):
                  dropout: float = 0.0, tau: float = 1.0, margin: float = 0.02,
                  compete: bool = False, norm_spatial: bool = False,
                  num_classes: int = 0, grouped: bool = False,
-                 res_scale: float = 0.0, no_residual: bool = False):
+                 res_scale: float = 0.0, no_residual: bool = False,
+                 detach_feat: bool = False, perm_path: str = "", kernel: int = 1):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -71,13 +72,28 @@ class PartAttention(nn.Module):
         self.res_scale = float(res_scale)
         # 完全去掉残差：部件证据改走 logit 级融合（见 Classifier 的 pa_logit_fuse）
         self.no_residual = bool(no_residual)
+        # 部件分支与主干解耦：检测器/池化只看 detach 后的特征，逐部件 CE 不再回传
+        # 到 backbone。这样主分支与基线逐位同分布（只受 CAM 分支影响），
+        # 否决票是完全叠加在上面的零成本机制。
+        self.detach_feat = bool(detach_feat)
+        # 通道分组的顺序：连续切分是索引任意的（torch 的通道顺序没有语义），
+        # 用训练集统计的通道相关性聚类得到的 perm 会把相关通道放在同一组。
+        if perm_path:
+            import numpy as np
+            perm = torch.as_tensor(np.load(perm_path), dtype=torch.long)
+            self.register_buffer("perm", perm, persistent=False)
+        else:
+            self.perm = None
         if self.grouped:
             if channels % self.num_parts != 0:
                 raise ValueError(f"grouped 需要 channels({channels}) 能被 num_parts({self.num_parts}) 整除")
-            self.det = nn.Conv2d(channels, self.num_parts, kernel_size=1, groups=self.num_parts)
+            kk = int(kernel); pad = kk // 2
+            self.det = nn.Conv2d(channels, self.num_parts, kernel_size=kk, padding=pad,
+                                 groups=self.num_parts)
             self.group_ch = channels // self.num_parts
         else:
-            self.det = nn.Conv2d(channels, self.num_parts, kernel_size=1)
+            kk = int(kernel); pad = kk // 2
+            self.det = nn.Conv2d(channels, self.num_parts, kernel_size=kk, padding=pad)
             self.group_ch = channels
         # 部件身份嵌入：检测器是有编号的，注意力需要知道"我是第几个部件"
         self.emb = nn.Parameter(torch.zeros(1, self.num_parts, dim))
@@ -110,6 +126,10 @@ class PartAttention(nn.Module):
         self._last_div: torch.Tensor | None = None
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
+        if self.detach_feat:
+            feat = feat.detach()
+        if self.perm is not None:
+            feat = feat[:, self.perm]
         b, c, h, w = feat.shape
         # MA-CNN Eq.4：部件掩码用 sigmoid 得到 [0,1] 的响应，而不是 softmax。
         # 这一点很关键：散度项是在 [0,1] 的掩码上做的（margin=0.02），
@@ -269,6 +289,9 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         grouped=bool(mcfg.get("pa_grouped", False)),
         res_scale=float(mcfg.get("pa_res_scale", 0.0)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
+        detach_feat=bool(mcfg.get("pa_detach", False)),
+        perm_path=str(mcfg.get("pa_perm") or ""),
+        kernel=int(mcfg.get("pa_kernel", 1)),
     )
     try:
         p = next(backbone.parameters())
@@ -372,6 +395,10 @@ class SlotParts(nn.Module):
         return _sincos_2d(h, w, self.dim).to(device=device, dtype=dtype)
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
+        if self.detach_feat:
+            feat = feat.detach()
+        if self.perm is not None:
+            feat = feat[:, self.perm]
         b, c, h, w = feat.shape
         n = h * w
         x = self.proj(feat.flatten(2).transpose(1, 2)) + self._pos(h, w, feat.device, feat.dtype)

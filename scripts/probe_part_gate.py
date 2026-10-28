@@ -85,6 +85,16 @@ def main():
         fixed = int((ok_new & ~ok_old).sum()); broke = int((~ok_new & ok_old).sum())
         print(f"若 ≥{need}/{k} 部件一致且不同于主分支则改判: {float(ok_new.float().mean()*100):.2f} "
               f"(触发 {int(use.sum())}: 改对 {fixed} 改错 {broke})")
+    # 门控：只在共识类位于主分支 top-m 时才改判（避免采纳完全无关的类）
+    for m in (2, 3, 5):
+        topm = pm.topk(m, dim=1).indices
+        in_top = (topm == vote[:, None]).any(1)
+        for need in (k - 1, k):
+            use = (agree >= need) & (vote != pred_m) & in_top
+            pred = pred_m.clone(); pred[use] = vote[use]
+            ok_new = (pred == y); ok_old = (pred_m == y)
+            print(f"≥{need}/{k} 一致 + 共识类在主分支 top-{m}: {float(ok_new.float().mean()*100):.2f} "
+                  f"(触发 {int(use.sum())}: 改对 {int((ok_new&~ok_old).sum())} 改错 {int((~ok_new&ok_old).sum())})")
     # 门控：部件一致票的置信度高于主分支才改判
     conf_v = pp.gather(2, vote[:, None, None].expand(-1, k, 1)).mean(1).squeeze(-1)
     conf_m = pm.max(1).values

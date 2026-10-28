@@ -308,6 +308,8 @@ def build_criterion(cfg: dict) -> nn.Module:
             "logits_fused": t.get("cam_fuse_w", 0.0),
             "logits_hyp1": t.get("hyp_aux_w", 0.0),
             "logits_partaux": t.get("pta_aux_w", 0.0),
+            "logits_mge": t.get("mge_aux_w", 0.0),
+            "logits_region": t.get("rr_region_w", 0.0),
             "logits_hyp2": t.get("hyp_aux_w", 0.0),
             "logits_ds": t.get("deep_sup_w", 0.0),
             "logits_pmg1": t.get("pmg_stage_w", 0.0),
@@ -429,7 +431,8 @@ def build_optimizer(model: nn.Module, cfg: dict) -> torch.optim.Optimizer:
         # 根本不会被更新 —— 训练会安静跑完，模块保持随机初始化。
         # 它们都是随机初始化的新参数，所以给头部的学习率（1.0）。
         for attr in ("fpn", "attn_aux", "pair_aux", "pmg", "deep_sup", "attn_pool", "se_gate",
-                     "tokenlearner", "part_fusion", "part_head", "hyp_comb"):
+                     "tokenlearner", "part_fusion", "part_head", "hyp_comb", "mge",
+                     "region_router"):
             aux = getattr(model, attr, None)
             if aux is not None:
                 m_scale = 1.0
