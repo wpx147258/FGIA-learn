@@ -9,3 +9,6 @@ __pycache__/
 *.pyc
 .claude/
 .ipynb_checkpoints/
+
+# 远程权重临时下载目录（每个 300MB，不入库）
+ckpts_remote/
