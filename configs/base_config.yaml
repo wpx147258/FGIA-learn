@@ -71,6 +71,10 @@ MODEL:
   tl_attn_depth: 0
   tl_attn_heads: 4
   tl_readout: mean
+  # TokenLearner 内部（score 头 + token 间 Transformer）的 dropout。
+  # 留空 = 沿用 MODEL.dropout（历史上就是 0.1）。注意部件/GlobalContext 的
+  # pa_dropout/gc_dropout 默认是 0 —— 两族模块的 dropout 并不一致，跨族比较时要对齐。
+  tl_dropout: null
   # replace：直接把注意力池化结果替换 GAP（back=pinv(proj)，alpha 初始 0.5，
   # 此时 back(v)≈GAP，所以初始仍等于 GAP）。用来检验「额外残差通路」本身是否有害。
   tl_replace: false
@@ -105,6 +109,9 @@ MODEL:
   cam_fuse: false
   # 融合几路区域：1 = 整图 + 紧裁剪；2 = 整图 + 紧裁剪 + 宽裁剪（需要 TRAIN.cam_margin2）
   cam_fuse_regions: 1
+  # 按 CAM 框面积门控裁剪分支（0 = 不门控）。实测：框大时裁剪分支 +5.9、框小时 −11.9，
+  # 所以只在 area>阈值 的样本上采纳它；β 仍可学习，初始 0。
+  cam_gate_area: 0.0
   part_attn: false
   # 部件裁出来重新编码 + 部件间自注意力（MA-CNN 的流水线，融合器换成注意力）。
   # 测试需要 1 + pa_parts 次前向（机制本身需要，不是 TTA）。需要 part_attn 开。
@@ -192,6 +199,8 @@ MODEL:
   # AttnPool 的读出方式：mean = token 平均；cls = 额外一个全局 token（初始 = GAP），
   # 拼在序列最前面一起过自注意力，最后读它自己（token 之间会互相看）。pos 只加给空间 token。
   attn_readout: mean
+  # AttnPool 内部 Transformer 的 dropout（留空 = MODEL.dropout）
+  attn_dropout: null
   # 同上：replace=true 时用注意力池化替换 GAP，而不是加残差
   attn_replace: false
   # 分类头的 dropout（只正则 410K 参数的线性头）

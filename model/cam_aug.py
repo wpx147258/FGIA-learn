@@ -314,6 +314,9 @@ class CamAux:
                 boxes = None
             else:
                 boxes = mask_to_box(mask_c)
+                # 把框面积也带出去：分类器可以用它做「框大才采纳裁剪分支」的门控
+                wh = (boxes[:, 2:] - boxes[:, :2]).clamp_min(0)
+                out["cam_box_area"] = wh[:, 0] * wh[:, 1]
                 patch = crop_and_resize(x, boxes, self.out_size, margin)
                 out["logits_crop"] = model(patch)        # 第二次 backbone 前向
             if self.margin2 is not None and boxes is not None:

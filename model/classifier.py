@@ -31,7 +31,7 @@ class Classifier(nn.Module):
                  attn_pool: nn.Module | None = None, attn_from: str = "layer4",
                  se_gate: nn.Module | None = None,
                  tokenlearner: nn.Module | None = None,
-                 cam_fuse: bool = False, cam_fuse_regions: int = 1,
+                 cam_fuse: bool = False, cam_fuse_regions: int = 1, cam_gate_area: float = 0.0,
                  part_rerank: bool = False, pr_margin: float = 1.3,
                  pr_alpha: float = 0.2, pr_size: int = 448, pr_parts: int = 0,
                  pr_use_cam: bool = False,
@@ -55,6 +55,10 @@ class Classifier(nn.Module):
         # 代价是测试 2 次前向。β 初始为 0 => 初始测试与基线逐位等价。
         self.cam_fuse = bool(cam_fuse)
         self.cam_fuse_regions = int(cam_fuse_regions)
+        # 按 CAM 框面积门控裁剪分支：只有框足够大（判别区本来就大）时才采纳它。
+        # 依据（scripts/probe_cam_box.py，test 200 张）：框大的三分位上裁剪分支比主分支
+        # 高 5.9 点，框小的三分位上低 11.9 点。0 = 不门控。
+        self.cam_gate_area = float(cam_gate_area)
         # 部件裁出来重新编码（MA-CNN 的做法）+ 部件间自注意力融合。
         # 测试 K+1 次前向；这是机制本身需要，不是 TTA。
         # 假设条件重检：整图 -> 取 top-2 类别 -> 各自算 CAM 框、裁出来重编码 -> 融合。
@@ -364,10 +368,16 @@ class Classifier(nn.Module):
         w = self.head.cam_weight(fm.shape[1]).detach()
         cam = cam_map(fm.float(), w, pred)
         boxes = mask_to_box(peak_mask(cam, self.cam_aux.alpha_crop).detach())
+        if self.cam_gate_area > 0:
+            wh = (boxes[:, 2:] - boxes[:, :2]).clamp_min(0)
+            area = wh[:, 0] * wh[:, 1]                                # [B]
+            gate = (area > self.cam_gate_area).to(logits.dtype).unsqueeze(-1)   # [B,1]
+        else:
+            gate = 1.0
         patch = crop_and_resize(x, boxes, self.cam_aux.out_size, self.cam_aux.margin)
         feat_r = self.backbone.forward_features(patch)
         logits_r = self.head(self.backbone.forward_head(feat_r))
-        fused = logits + self.cam_beta * logits_r
+        fused = logits + self.cam_beta * logits_r * gate
         if self.cam_fuse_regions >= 2 and self.cam_aux.margin2 is not None:
             patch2 = crop_and_resize(x, boxes, self.cam_aux.out_size, self.cam_aux.margin2)
             feat_r2 = self.backbone.forward_features(patch2)
@@ -495,7 +505,11 @@ class Classifier(nn.Module):
                 if self.cam_aux is not None:
                     out.update(self.cam_aux(self, x, feat_map, logits, y, batch))
                     if self.cam_fuse and "logits_crop" in out:
-                        fused = out["logits"] + self.cam_beta * out["logits_crop"]
+                        gate = 1.0
+                        if self.cam_gate_area > 0 and "cam_box_area" in out:
+                            gate = (out["cam_box_area"] > self.cam_gate_area).to(
+                                out["logits"].dtype).unsqueeze(-1)
+                        fused = out["logits"] + self.cam_beta * out["logits_crop"] * gate
                         if "logits_crop2" in out and getattr(self, "cam_beta2", None) is not None:
                             fused = fused + self.cam_beta2 * out["logits_crop2"]
                         out["logits_fused"] = fused
@@ -667,7 +681,11 @@ class Classifier(nn.Module):
         if use_cam:
             out.update(self.cam_aux(self, x, feat, logits, y, batch))
             if self.cam_fuse and "logits_crop" in out:
-                fused = out["logits"] + self.cam_beta * out["logits_crop"]
+                gate = 1.0
+                if self.cam_gate_area > 0 and "cam_box_area" in out:
+                    gate = (out["cam_box_area"] > self.cam_gate_area).to(
+                        out["logits"].dtype).unsqueeze(-1)
+                fused = out["logits"] + self.cam_beta * out["logits_crop"] * gate
                 if "logits_crop2" in out and getattr(self, "cam_beta2", None) is not None:
                     fused = fused + self.cam_beta2 * out["logits_crop2"]
                 out["logits_fused"] = fused
@@ -793,7 +811,9 @@ def build_model(cfg: dict) -> Classifier:
             in_channels=feat_dim, out_dim=feat_dim,
             dim=int(mcfg.get("tl_dim", 256)),
             s_tokens=int(mcfg.get("tl_tokens", 8)),
-            dropout=float(mcfg.get("dropout", 0.0)),
+            # TL 自己的 dropout（留空沿用 MODEL.dropout，保持历史口径）
+            dropout=float(mcfg.get("tl_dropout") if mcfg.get("tl_dropout") is not None
+                          else mcfg.get("dropout", 0.0)),
             ent_target=float(mcfg.get("tl_ent_target", 0.0)),
             div_w=float(mcfg.get("tl_div_w", 0.0)),
             js_w=float(mcfg.get("tl_js_w", 0.0)),
@@ -826,7 +846,7 @@ def build_model(cfg: dict) -> Classifier:
             use_pos=bool(mcfg.get("attn_pos", False)),
             readout=str(mcfg.get("attn_readout", "mean")),
             replace=bool(mcfg.get("attn_replace", False)),
-            dropout=float(mcfg.get("dropout", 0.0)))
+            dropout=float(mcfg.get("attn_dropout", mcfg.get("dropout", 0.0))))
 
     deep_sup = None
     if mcfg.get("deep_sup", False):
@@ -859,6 +879,7 @@ def build_model(cfg: dict) -> Classifier:
                       deep_sup, attn_pool, str(mcfg.get("attn_from", "layer4")), se_gate,
                       tokenlearner, cam_fuse=cam_fuse,
                       cam_fuse_regions=cam_fuse_regions,
+                      cam_gate_area=float(mcfg.get("cam_gate_area", 0.0)),
                       part_rerank=part_rerank,
                       pr_margin=float(mcfg.get("pr_margin", 1.3)),
                       pr_alpha=float(mcfg.get("pr_alpha", 0.2)),
