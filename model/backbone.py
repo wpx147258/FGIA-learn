@@ -58,17 +58,31 @@ class SE(nn.Module):
 
 
 def add_se_blocks(model: nn.Module, reduction: int = 16) -> nn.Module:
-    """把 SE 插到每个 Bottleneck 的输出上，保留原有预训练权重。"""
+    """把 SE 插到每个 Bottleneck 的**残差分支**上（标准 SE-ResNet）。
+
+    标准 SE-ResNet（Hu et al. 2018）：out = relu(x + SE(F(x)))。
+    SE 只包残差分支 F(x)（conv1..bn3），捷径 x 原样通过。
+
+    实现：在 bn3（残差分支的最后一层）上挂 forward hook，把它的输出套上 SE。
+    hook 返回值会替换 bn3 的输出，下游的加法用的就是 SE(F(x))，捷径不受影响。
+
+    为什么用 hook 而不是替换整个 forward：
+      旧版用 lambda 把 SE 包在整个 block 输出（SE(x+F(x))）上，捷径被一起衰减，
+      16 个 block 连乘 ≈0.5^16，特征直接归零（实测 epoch 0 只有 1% 准确率）。
+      hook 精确插在「bn3 之后、加法之前」，等价于标准 SE-ResNet 的位置。
+    """
     n = 0
     for m in model.modules():
         if type(m).__name__ == "Bottleneck":
             c = m.conv3.out_channels
-            m.se = SE(c, reduction)
-            m._forward_orig = m.forward
-            # 闭包绑定当前模块，避免所有 block 共用最后一个
-            # 赋给实例的普通函数不会自动绑定 self，所以这里只接 x，
-            # 模块本身通过默认参数绑定
-            m.forward = (lambda x, _m=m: _m.se(_m._forward_orig(x)))
+            se = SE(c, reduction)
+            # 独立命名 se_block，避免与 timm 原生的 self.se 槽位冲突（否则双重应用）
+            m.se_block = se
+
+            def _hook(module, args, output, _se=se):
+                return _se(output)   # SE(F(x))
+
+            m.bn3.register_forward_hook(_hook)
             n += 1
     if n == 0:
         raise ValueError("没找到 Bottleneck，SE 插入失败")

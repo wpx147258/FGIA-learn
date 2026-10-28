@@ -809,6 +809,7 @@ def build_model(cfg: dict) -> Classifier:
             depth=int(mcfg.get("attn_depth", 2)),
             heads=int(mcfg.get("attn_heads", 4)),
             use_pos=bool(mcfg.get("attn_pos", False)),
+            readout=str(mcfg.get("attn_readout", "mean")),
             dropout=float(mcfg.get("dropout", 0.0)))
 
     deep_sup = None
