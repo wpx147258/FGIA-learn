@@ -865,7 +865,9 @@ def build_model(cfg: dict) -> Classifier:
             use_pos=bool(mcfg.get("attn_pos", False)),
             readout=str(mcfg.get("attn_readout", "mean")),
             replace=bool(mcfg.get("attn_replace", False)),
-            dropout=float(mcfg.get("attn_dropout", mcfg.get("dropout", 0.0))))
+            # .get(k, default) 在 k 存在但值为 null 时返回 None，不能直接 float()
+            dropout=float(mcfg.get("attn_dropout") if mcfg.get("attn_dropout") is not None
+                          else mcfg.get("dropout", 0.0)))
 
     deep_sup = None
     if mcfg.get("deep_sup", False):
