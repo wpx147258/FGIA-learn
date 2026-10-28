@@ -217,7 +217,7 @@ class CamAux:
                  drop_strength: float = 1.0, crop_union: bool = False,
                  margin_union: float | None = None, crop_majority: bool = False,
                  quad_p: float = 1.0, margin2: float | None = None,
-                 teacher: str = "cam"):
+                 teacher: str = "cam", part_views: tuple = ()):
         self.drop_w = float(drop_w)
         self.crop_w = float(crop_w)
         self.quad_w = float(quad_w)
@@ -253,6 +253,9 @@ class CamAux:
         # gt_head = 数据集按关键点裁好的头部图（来自 batch["head"]）。
         # 换成 GT 是干净的对照：一致性机制不变，只换教师视图怎么来。
         self.teacher = str(teacher)
+        # 额外的部位视图（训练期特权裁剪）：数据集已按关键点裁好并 transform 过，
+        # 各路共享同一个骨干，各自接一个 CE（硬标签）。测试时完全不经过这里。
+        self.part_views = tuple(part_views)
         self.enabled = self.drop_w > 0 or self.crop_w > 0 or self.quad_w > 0
 
     def _cam(self, model, x, feat, labels):
@@ -323,6 +326,11 @@ class CamAux:
                 # 第三个视角：同一个框、更大外扩。只进一致性损失，不接 CE。
                 out["logits_crop2"] = model(
                     crop_and_resize(x, boxes, self.out_size, self.margin2))
+        if self.part_views and batch is not None:
+            for name in self.part_views:
+                key = "logits_" + name
+                if name in batch and key not in out:
+                    out[key] = model(batch[name].to(x.device))
         if self.quad_w > 0 and (self.quad_p >= 1.0 or torch.rand(1).item() < self.quad_p):
             # 切点用 CAM 质心：峰值区被切成四份散开，其余内容只换位置
             centers = cam_centroid(cam).detach()
@@ -349,5 +357,7 @@ def build_cam_aux(tcfg: dict, image_size: int) -> CamAux | None:
         quad_p=tcfg.get("cam_quad_p", 1.0),
         margin2=tcfg.get("cam_margin2"),
         teacher=tcfg.get("cam_teacher", "cam"),
+        part_views=tuple(v.strip() for v in str(tcfg.get("cam_part_views") or "").split(",")
+                         if v.strip()),
     )
     return aux if aux.enabled else None

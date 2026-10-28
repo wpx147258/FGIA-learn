@@ -20,6 +20,12 @@ from utils.data_split import get_split_data
 # parts.txt 的编号（1..15）
 HEAD_PARTS = (2, 5, 6, 7, 10, 11, 15)      # beak, crown, forehead, eyes, nape, throat
 BODY_PARTS = (1, 3, 4, 8, 9, 12, 13, 14)   # back, belly, breast, legs, wings, tail
+# 单独成组的两个部位（训练期特权裁剪用）：左右翅合并（PAIRS 指出左右翅/腿常被混淆，
+# 单侧可见率只有 50~57%，合并后 96.9%），尾单独（92.8%，但 22% 落在 448 中心裁剪外）。
+# parts.txt 的实际编号：7 left eye / 8 left leg / 9 left wing / 11 right eye /
+# 12 right leg / 13 right wing / 14 tail。
+WING_PARTS = (9, 13)                        # 左右翅（合并后可见率 96.9%）
+TAIL_PARTS = (14,)                          # 尾（可见率 92.8%）
 
 
 def box_from_points(points, W: int, H: int,
@@ -47,7 +53,7 @@ class CUBDataset(Dataset):
 
     def __init__(self, data_root, split: str, transform, num_classes: int,
                  use_parts: bool = False, part_transform=None,
-                 part_pad: float = 0.35):
+                 part_pad: float = 0.35, extra_views: tuple = ()):
         super().__init__()
         self.root = Path(data_root)  # ./data/CUB-200-2011
         self.transform = transform
@@ -60,6 +66,8 @@ class CUBDataset(Dataset):
         self.use_parts = use_parts
         self.part_transform = part_transform or transform
         self.part_pad = part_pad
+        # 额外部位视图（"wing" / "tail"）：只在开启时才裁，省掉不需要的开销。
+        self.extra_views = tuple(v for v in extra_views if v in ("wing", "tail"))
         if use_parts:
             self.parts = self.get_parts(self.root / "parts" / "part_locs.txt")
             self.bboxes = self.get_bboxes(self.root / "bounding_boxes.txt")
@@ -131,6 +139,25 @@ class CUBDataset(Dataset):
                             min(W, int(bx + bw)), min(H, int(by + bh)))
         return head_box, body_box
 
+    def _extra_part_boxes(self, image_id: int, W: int, H: int, body_box):
+        """翅/尾的框（训练期特权裁剪用）。
+
+        关键点缺失时不返回 None 而是退回 body_box：DataLoader 的 default_collate
+        要求同一批里键一致，不能按样本增删键。用 body 兜底的样本相当于把「翅膀」
+        退化成全身视图，比喂一张全黑图干净。
+        """
+        locs = self.parts.get(image_id, {})
+
+        def visible(ids):
+            return [(locs[i][0], locs[i][1]) for i in ids
+                    if i in locs and locs[i][2] == 1]
+
+        out = {}
+        for name, ids in (("wing", WING_PARTS), ("tail", TAIL_PARTS)):
+            pts = visible(ids)
+            out[name] = box_from_points(pts, W, H, self.part_pad) if pts else body_box
+        return out
+
     def __len__(self) -> int:
         return len(self.data_ids)
 
@@ -152,4 +179,8 @@ class CUBDataset(Dataset):
                 head_box, body_box = self._part_boxes(image_id, W, H)
                 sample["head"] = self.part_transform(img.crop(head_box))
                 sample["body"] = self.part_transform(img.crop(body_box))
+                if self.extra_views:
+                    extra = self._extra_part_boxes(image_id, W, H, body_box)
+                    for name in self.extra_views:
+                        sample[name] = self.part_transform(img.crop(extra[name]))
         return sample

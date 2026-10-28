@@ -57,6 +57,12 @@ def build_dataloaders(cfg: dict, backbone,
     # 三流融合要用部位图；「GT 头框当一致性教师」只要 head 那一张，也走同一条链路
     use_parts = (cfg["MODEL"].get("fusion") == "head_body"
                  or cfg["TRAIN"].get("cam_teacher") == "gt_head")
+    # 额外的部位视图（"wing,tail"）：训练期特权裁剪用，见 model/cam_aug.py
+    extra_views = tuple(
+        v.strip() for v in str(cfg["TRAIN"].get("cam_part_views") or "").split(",")
+        if v.strip())
+    if extra_views:
+        use_parts = True
 
     # 成对判别要求批内有同类样本，随机采样给不了 —— 换成 P×K 批采样器。
     # TRAIN.pk_sampler 可以单独打开，用来做「只换采样、不加成对损失」的对照：
@@ -79,6 +85,8 @@ def build_dataloaders(cfg: dict, backbone,
             use_parts=use_parts,
             part_transform=build_transform(data_cfg, dcfg["image_size"],
                                            train=is_train, tcfg=tcfg, mild=True),
+            # 只有训练需要这些额外视图；评估时算它们是纯浪费（测试不走辅助分支）
+            extra_views=extra_views if is_train else (),
         )
         # 把 val 并进训练：val 本来就是从官方 train 里切出来的，合回去就是完整的
         # 5994 张。只改 data_ids，路径/标签/部位框都是按 image_id 查表的，自动对得上。
