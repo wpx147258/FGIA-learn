@@ -1,0 +1,11 @@
+# 训练产出、数据、缓存：体积大，不进仓库
+outputs/
+data/
+dumps/
+logs/
+tem/
+paper/
+__pycache__/
+*.pyc
+.claude/
+.ipynb_checkpoints/

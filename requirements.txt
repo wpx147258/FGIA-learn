@@ -1,0 +1,21 @@
+# CUB-200-2011 细粒度分类 baseline
+#
+# 环境：Linux + NVIDIA GPU（开发机为 RTX 3090 24G / CUDA 13.0）
+#
+# torch / torchvision 请按自己的 CUDA 版本从官方 index 装，例如 cu130：
+#   pip install torch==2.14.1 torchvision==0.29.1 \
+#       --index-url https://download.pytorch.org/whl/cu130
+# 装完再执行：
+#   pip install -r requirements.txt
+
+torch==2.14.1
+torchvision==0.29.1
+
+# 模型库。本项目不自己写模型结构，全部走 timm；
+# 换 backbone 只需改 config 里的 MODEL.name。
+timm==1.0.30
+
+PyYAML==6.0.1
+pillow==10.3.0
+numpy==1.26.4
+tqdm==4.66.4

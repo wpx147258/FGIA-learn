@@ -1,0 +1,4 @@
+# 实验配置：只写与 base_config.yaml 不同的部分，其余全部继承 base。
+# 用法：python train.py --config configs/baseline_config.yaml
+
+EXP_NAME: baseline_resnet50

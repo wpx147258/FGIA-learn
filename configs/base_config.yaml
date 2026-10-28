@@ -1,0 +1,437 @@
+# 完整的一份配置：所有可调项都在这里定义。
+# 实验配置（如 baseline_config.yaml）只写与这里不同的 delta，不要复制整份。
+
+SEED: 42
+EXP_NAME: base                   # 实验配置里覆盖它，决定 outputs/ 下的目录名
+
+DATASET:
+  name: cub
+  # 相对「项目根」而不是 cwd（见 utils/config.py 的 resolve_path）
+  root: data/CUB-200-2011
+  num_classes: 200
+  image_size: 224
+  num_workers: 6
+  # 评测裁剪比例（短边缩放到 image_size / crop_pct 再中心裁）。留空 = 跟随预训练配置
+  # （R50 0.875、CLIP-RN50 0.9、CLIP-ViT 1.0）。换主干做对照时显式统一成 0.875，
+  # 否则「涨点」里混着视野差异。
+  crop_pct: null
+  # 把 val 的 599 张也并进训练集（5395 -> 5994，+11%）。
+  # ⚠️ 打开后 val 指标失去意义（那些图模型已经背过），只能看 test。
+  #    最终结果请用 swa.pth，不要用 best.pth（best 是按被污染的 val 选的）。
+  train_on_val: false
+
+MODEL:
+  # 直接喂给 timm.create_model。换 backbone 只改这一个字符串，
+  # 例如 convnext_tiny / vit_base_patch16_224 / efficientnet_b0。
+  name: resnet50
+  head: linear
+  # 池化方式：avg = timm 自带的全局平均池化；gem = 可学习的广义平均池化
+  # f = (mean(x^p))^(1/p)。p=1 是 GAP，p 越大越接近 max。只多一个标量参数。
+  pool: avg
+  gem_p: 3.0
+  # ViT 在 448 输入下需要插值位置编码。只对 vit 类主干生效（ResNet 不认这个参数）。
+  dynamic_img_size: false
+  # PMG（渐进多粒度拼图，Du et al. ECCV 2020），见 model/pmg.py。
+  # 每 batch 跑 n=8/4/2/原图 四次前向；推理只用原图那一路（单模型，不是集成）。
+  # 开启后强制关闭 CAM 辅助分支（官方也不用，且前向次数会翻倍）。
+  pmg: false
+  pmg_feature_size: 512
+  # 深度监督：在 layer3 上加一路辅助分类器（只训练时用，测试路径不变）
+  deep_sup: false
+  # SE 通道注意力：插到 ResNet 每个 bottleneck 之后（保留原预训练权重）。
+  # 参数约 +2.8M。需要骨干里有 Bottleneck 结构。
+  se: false
+  # 最终特征图上的通道门控（乘法，初始≈恒等）。注意与 MODEL.se 不同：
+  # MODEL.se 是往每个 bottleneck 里插，需要改 block 的 forward；
+  # se_gate 只在最后一张特征图上做一次，不碰残差路径。
+  se_gate: false
+  # 软空间注意力池化（TokenLearner）：学 S 张空间权重图，各得一 token，平均后与 GAP 相加。
+  # 与 attn_pool 的区别：不改 token 之间的关系，只改聚合方式。输出层零初始化。
+  tokenlearner: false
+  tl_tokens: 8
+  tl_dim: 256
+  # 防塌缩：不加约束时熵会掉到 0.004（8 张图全塌成单点）。目标熵取 2 左右
+  # （均匀 = ln196 = 5.28，单点 = 0），并惩罚 8 张图之间的重叠。
+  tl_ent_target: 0.0
+  tl_div_w: 0.0
+  # CNN 特征图 -> token 序列 -> 轻量自注意力（综述 V-D 的「部位间相互依赖」）。
+  # 输出与 GAP 同维并相加，输出层零初始化 => 训练第 0 步与基线逐位等价。
+  # attn_tokens：49 = 先 2x2 平均池化成 7x7；196 = 直接用 14x14。
+  attn_pool: false
+  attn_from: layer4          # layer4: 14x14；layer3: 28x28（784 token）
+  # 输出 stride：关掉 layer4 的下采样（dilated），448 输入下最终特征图 28×28 而非 14×14。
+  # 见/model/backbone.py:set_output_stride8 与 PLAN_R50_90.md 的 H1。只支持 ResNet。
+  stride8: false
+  # 在 layer3(28×28) 与 layer4 之间插一层全局自注意力（model/global_ctx.py）。
+  # 输出零初始化 => 训练第 0 步与基线逐位等价。gc_depth=0 是控制臂
+  # （只做 1×1 降维 + 位置编码 + 升维，不做注意力），用来分离“注意力”与“多出的参数”。
+  global_ctx: false
+  gc_dim: 256
+  gc_depth: 1
+  gc_heads: 4
+  gc_mlp: 2.0
+  gc_dropout: 0.0
+  gc_pos: true
+  # GAP 初始化的内容注意力池化（model/attn_pool.py:ContentPool）。替换全局池化，
+  # 初始时逐位等于 GAP，但注意力权重从第 0 步就能拿到梯度。
+  content_pool: false
+  content_rank: 64
+  # 部件提取 + 部件间自注意力（model/part_attn.py，综述 [70]–[76] 的融合器换成注意力）。
+  # K 个 1×1 部件检测器 -> K 个部件描述子 -> 一层自注意力 -> 残差回特征图（GAP 之前）。
+  # 输出零初始化 => 初始等价基线。pa_depth=0 是参数对齐的控制臂（逐点 MLP，无部件间混合）。
+  # 测试时把「整图 + 按 CAM 框放大」两路融合（2 次前向）。融合系数 β 训练得到，
+  # 初值 0 => 初始测试与基线逐位等价。这是结构的一部分，不是 TTA。
+  # 需要 TRAIN.cam_crop > 0。
+  cam_fuse: false
+  # 融合几路区域：1 = 整图 + 紧裁剪；2 = 整图 + 紧裁剪 + 宽裁剪（需要 TRAIN.cam_margin2）
+  cam_fuse_regions: 1
+  part_attn: false
+  # 部件裁出来重新编码 + 部件间自注意力（MA-CNN 的流水线，融合器换成注意力）。
+  # 测试需要 1 + pa_parts 次前向（机制本身需要，不是 TTA）。需要 part_attn 开。
+  # 假设条件重检：整图 -> top-2 类别 -> 各自 CAM 框裁剪重编码 -> 学习式融合（3 次前向）
+  hyp_fuse: false
+  hyp_margin: 1.3
+  hyp_alpha: 0.2
+  hyp_size: 448
+  # 用小注意力模块替代固定 β 加权（三路 logits 互相看），零初始化
+  hyp_combiner: false
+  part_rerank: false
+  pr_margin: 1.3
+  pr_alpha: 0.2
+  pr_size: 448
+  # 重新编码只用前 N 个部件（按掩码质量选；0 = 全部）。K=4 检测器 + N=2 => 测试 3 次前向
+  pr_parts: 0
+  # 部件重编码之外，再加一路「按预测类 CAM 框裁剪重编码」（4 次前向）
+  pr_use_cam: false
+  # 训练期部件辅助分支（测试仍是单次前向整图）：部件框裁剪重编码 + 辅助 CE/一致性
+  part_train_aux: false
+  pta_parts: 2
+  pta_margin: 1.3
+  pta_alpha: 0.6
+  # 辅助裁剪改用 top-N 预测类的 CAM 框（紧凑），而不是部件掩码
+  pta_use_cam: false
+  pta_cam_alpha: 0.2
+  # 检测器挂在哪一层：layer4（14×14，旧口径）或 layer3（28×28，分辨率够做定位）
+  pa_from: layer4
+  # 竞争式划分 + 空间归一化：把 K 个部件「推开」的结构性机制。
+  # 每个空间位置只在 K 个部件之间做 softmax（一个格子只属于一个部件），
+  # 再做负载均衡（每个部件应占约 1/K 的位置），避免四个检测器退化成本同一张图。
+  pa_compete: false
+  pa_norm_spatial: false
+  # 通道硬分组（MA-CNN 的核心）：第 k 个检测器只能看第 k 组通道，
+  # 四个部件从初始化起就用不相交的子空间，结构上破坏对称性。
+  pa_grouped: false
+  # 残差幅度：0=原样；>0 时把残差范数固定成 GAP 范数的这个倍数（如 0.3）
+  pa_res_scale: 0.0
+  # 完全去掉残差路径（部件证据改走 logit 级融合）
+  pa_no_residual: false
+  # 部件证据走 logit 级融合（权重绑定主头、β_k 可学习、零初始化）
+  pa_logit_fuse: false
+  # 一致否决：K 个部件全体同意且不同于主分支时按置信度改判（零参数、零额外前向）
+  pa_veto: false
+  # 用 Slot Attention 代替 1×1 检测器（跨 slot 竞争 + 迭代更新 + 2D 位置编码）
+  pa_slots: false
+  # 多尺度 × 多区域组：layer3(28x28)+layer4(14x14) 各 K 个通道组 token，2K 个 token 过 pa_depth 层
+  pa_multiscale: false
+  pa_slot_iters: 3
+  pa_parts: 16
+  pa_dim: 256
+  pa_depth: 1
+  pa_heads: 4
+  pa_mlp: 2.0
+  pa_dropout: 0.0
+  pa_tau: 1.0
+  pa_margin: 0.02          # MA-CNN 散度项的 margin（原文 0.02）
+  attn_tokens: 196
+  attn_dim: 256
+  attn_depth: 2
+  attn_heads: 4
+  attn_pos: false            # 位置编码。文献里 non-local/GCNet/DANet 都不加，
+                             # 但 PART 在 CUB 上的消融显示可学习绝对位置编码值 +0.6~0.7
+  # 分类头的 dropout（只正则 410K 参数的线性头）
+  dropout: 0.0
+  # 线性头 FC 前加一层 BatchNorm1d。不同预训练权重的特征幅度差很多
+  # （a1 的 GAP 特征 rms 0.10，SWSL 0.65），不加它的话 SWSL 只能靠
+  # backbone_lr_scale=0.1 这种很低的 backbone 学习率才训得动。
+  head_norm: false
+  # 注意力模块的部位数 K（只在 TRAIN.attn_weight > 0 时用得上）
+  num_parts: 32
+  # FPN 多尺度融合：layer3(28×28) 上采样后与 layer4(14×14) 相加，见 model/fpn.py。
+  # 只做 GAP 分类时收益可能有限——FPN 的分辨率优势会被 GAP 抹掉。
+  # 开启后辅助分支（cam_drop/cam_crop）会被跳过，避免归因混乱。
+  fpn: false
+  # 三流融合：整图 / 头部 / 身体（按 GT keypoint 裁）共享同一个 backbone，
+  # 特征拼接后分类。需要 CUB 的 parts/part_locs.txt。
+  # 空字符串 = 关闭。
+  fusion: ""
+  fpn_channels: 256
+  # NetVLAD 头（MODEL.head=netvlad）的参数。
+  # clusters 是簇数；init_scale 是 assign 卷积的初始化放大倍数 ——
+  # 默认初始化会让 softmax 直接饱和成均匀（32 个簇全冗余，实测熵 99.5% × lnK），
+  # 放大到让起点熵约 55~85% 才有结构。但放太大（×60）会进 softmax 饱和区、
+  # 梯度消失（实测 train_loss 卡在 4.4、val < 10%）。
+  netvlad_clusters: 32
+  netvlad_init_scale: 60.0
+  # CAP 头（MODEL.head=cap，Behera et al. AAAI 2021）。见 model/cap_head.py。
+  # cap_vlad=false 是论文的 B+C：SE→像素自注意力→42×42→27 ROI→区域注意力→GAP→FC
+  #               （CUB 上 +11.8，Xception）。
+  # cap_vlad=true  再加 LSTM+NetVLAD（B+C+E，额外 +4.4）。
+  cap_vlad: false
+  cap_lstm: 128
+  cap_clusters: 32          # 留空 = 不降维（参数会爆到 44M，因为 3x3 平滑层是 C^2*9）
+  # Compact Bilinear Pooling 头（MODEL.head=cbp，见 model/head.py）的 sketch 维度。
+  # 2048 维特征的外积是 2048×2048，用 Tensor Sketch 近似到 cbp_dim 维。
+  # 不增加可学习参数，只在 forward 里多两次 FFT。
+  cbp_dim: 8192
+  # 区域性聚合方式。attn = 论文 Eq.2 的跨区域注意力；identity = 每个区域保留
+  # 自己的特征（ctx = R），作为「27 区域结构有没有信息」的对照。
+  # 实测 attn 模式下 α 近均匀，27 个区域被平均成同一个向量，最终不同图片的
+  # 描述子两两余弦 0.998。
+  cap_region: attn
+  # 成对判别（API-Net, Zhuang et al., AAAI 2020），见 model/pair.py。
+  # 训练时每批按特征距离配对，用两张图的差异向量做通道门控，产出四路 logits；
+  # 测试时整套卸载，单图走 backbone → head，和现在完全一样。
+  # ⚠️ 开启后 TRAIN.batch_size 失效，批大小 = TRAIN.pair_p × TRAIN.pair_k。
+  # ⚠️ 不支持与 MODEL.fpn / MODEL.fusion 同时开（它吃的是池化后的向量）。
+  pair: false
+  pair_hidden: 512
+  kwargs:
+    pretrained: true
+    # backbone 的随机深度。作用在 15 个残差块上，是真正有分量的正则。
+    # a1 预训练时用的是 0.05。
+    drop_path_rate: 0.0
+
+TRAIN:
+  batch_size: 32
+  epochs: 100
+  # 优化器必须显式写出来：lr=1e-3 配 AdamW 合理，配 SGD 会严重欠训练。
+  optimizer: adamw              # adamw | sgd
+  lr: 0.001                     # 分类头的 lr；backbone 的是它 × backbone_lr_scale
+  # 判别式学习率：预训练 backbone 用 lr × 这个系数。
+  # 预训练权重不该被和随机初始化的头一样大的 lr 扰动 —— PMG (ECCV'20) 用 1/10
+  # （新层 0.002 / 预训练层 0.0002）。设成 1.0 等价于全网络统一 lr。
+  backbone_lr_scale: 1.0
+  # 渐进解冻：后期把 backbone 的 lr 倍率从 backbone_lr_scale 抬到 _final。
+  # 留空 = 不启用，全程用 backbone_lr_scale。
+  # 理由：头是随机的，前几轮梯度乱，此时 backbone 用大 lr 会被推平
+  # （实测 SWSL 在 scale=1.0 下 loss 卡在 ln(200)、特征 rms 0.65→0.17）。
+  # ramp 是两个比例（占总轮数），在这两点之间线性过渡。
+  backbone_lr_scale_final:
+  backbone_lr_ramp: [0.1, 0.6]
+  # 分层学习率（倍率 × TRAIN.lr），全部留空 = 整个 backbone 用统一的 backbone_lr_scale。
+  # 低层小、高层大：保住低层纹理特征，只让高层语义层适配新任务。
+  # 启用时渐进解冻（backbone_lr_scale_final）不生效。
+  # 例: --set TRAIN.backbone_lr_layers.layer4=0.2 TRAIN.backbone_lr_layers.layer1=0.01
+  backbone_lr_layers:
+    stem:
+    layer1:
+    layer2:
+    layer3:
+    layer4:
+  weight_decay: 0.05
+  momentum: 0.9                 # 仅 sgd 用
+  scheduler: cosine             # cosine | step | none
+  warmup_epochs: 3
+  min_lr: 1.0e-6
+  # cosine 在训练结束前就降到 min_lr 的比例（1.0 = 走满全程，和以前一样）。
+  # 0.6 表示 50 轮里第 30 轮就降到 min_lr，剩下 20 轮维持它继续精调。
+  # 想「更快退火」时调小这个值；配合调大 min_lr 可以保留后期学习能力。
+  lr_decay_frac: 1.0
+  # bf16 在 3090 上原生支持，且不需要 GradScaler（少一个会出 NaN 的部件）。
+  # 可选：bf16 | null（关掉）。
+  # 第一遍调试建议先设成 null 跑通、确认 loss 正常下降，再开 bf16；
+  # 这样万一出 NaN，你能确定不是混合精度的问题。
+  # fp16 需要额外的 GradScaler，当前循环没实现（见 engine/trainer.py 的 resolve_amp）。
+  amp: bf16
+  grad_clip: 1.0
+  label_smoothing: 0.0
+
+  # ---- 数据增强 ----
+  # CUB 上颜色**就是**判别特征（最难的鸥/燕鸥靠喙色和腿色区分），所以
+  # RandAugment 默认只保留几何操作。开颜色请用显式开关，并当成独立变量单独测。
+  rand_augment: ""                    # 例 "rand-m7-n2-mstd0.5-inc1"；空字符串 = 关闭
+  rand_augment_geometric_only: true   # false = 用 timm 默认的 15 个操作（含颜色类）
+  random_erasing: 0.0                 # 0 = 关闭；a1 预训练时用的是 0.35
+  # 训练时 RandomResizedCrop 覆盖原图面积的比例区间（只作用于训练，不影响评测）。
+  # [0.5, 1.0] 默认；调小下限 = 更多放大，针对小目标（实测最小五分之一的目标
+  # 准确率 84.5%，最大的 89.6%）。0.35 相当于线性放大最多 1.69 倍。
+  crop_scale: [0.5, 1.0]
+
+  # ---- Mixup / CutMix ----
+  # 混出来的图同时属于两个类，硬标签不成立 —— collate_fn 会在 batch 里加一个
+  # soft_target，由 ClassificationCriterion 识别（见 dataset/mixup.py）。
+  # a1 预训练时用的是 --mixup 0.2 --cutmix 1.0。
+  mixup: 0.0                          # Beta(α, α) 的 α；0 = 关闭
+  cutmix: 0.0
+  mixup_p: 1.0                        # 每个 batch 施加混合的概率
+  # manifold mixup：在**池化后的特征**上插值（图像保持干净），α 同 mixup。
+  # 只在 mixup=cutmix=0 时生效。它惩罚的是「类间存在非线性空隙」——
+  # 我们最难的那 14 个类簇在空间里重叠，这条是少数能在不引入类先验的前提下去动
+  # 这个几何的手段。0 = 关闭。
+  manifold_mixup: 0.0
+  # 混合批里用 mixup 而不是 cutmix 的概率（0.5 = 各半）。
+  # 0.7 的混合概率下：switch_p=0.5 -> cutmix 35%；0.714 -> cutmix 20%。
+  switch_p: 0.5
+
+  # ---- 权重平均（SWA）----
+  # cosine 退火到 lr≈0 时，末段各轮权重非常接近。平均掉它们可以消掉单轮抖动，
+  # 避免「按 val 挑 checkpoint」在 599 张验证集上选中噪声尖峰
+  # （实测有一次 best.pth 比 last.pth 低 1.80 个点）。
+  # ⚠️ 这条规则依赖 schedule 退火到 ≈0；换成恒定 lr 或 step decay 时，末端
+  #    就不再是收敛点，SWA 的前提不成立。
+  swa: true
+  # 可以是单个数字，也可以是列表 —— 列表会一次训练产出多份不同窗口的平均权重
+  # （窗口只在训练结束后起作用，不影响训练轨迹，所以扫描窗口不必各跑一遍）。
+  # 例: --set "TRAIN.swa_start_frac=[0.6, 0.7, 0.8]"
+  swa_start_frac: 0.7
+
+  # ---- CAM 引导的擦除 / 裁剪（只作用于训练，测试路径完全不变）----
+  # 诊断见 analyse.ipynb：模型定位已经很好（峰值 99.6% 在 GT 框内），
+  # 但注意力过度集中（前 10/196 格占 59.7% 的质量）。这两路逼它用多个区域。
+  cam_drop: 0.0                 # 擦除分支的损失权重；0 = 关闭。一次前向，训练时长不变
+  cam_crop: 0.0                 # 裁剪分支的损失权重；0 = 关闭。要重跑 backbone，训练约 2x
+  cam_alpha: 0.6                # 掩码阈值：CAM > alpha × 最大值 的格子算"峰值区"
+  # 两个分支可以各用一个阈值（留空 = 跟随 cam_alpha）。
+  # 需求是相反的：drop 要擦掉足够多的证据 -> 小；crop 要框住能独立分类的局部 -> 中等。
+  # 实测覆盖率（196 格）：alpha 0.2/0.3/0.6 -> 9.7%/7.0%/2.6%，
+  # 擦除后 top1 59%/75%/84%（太高说明没擦到东西）。
+  # 裁剪分支用**硬标签**（A 的类别）而不是 mixup 的软目标。
+  # 理由：CAM 用 A 的标签定位，裁出来的是 A 最显著的那块；CutMix 下那块往往是
+  # 纯 A 像素（B 贴在别处），要求它输出 "0.7A+0.3B" 是错误监督，会系统性压低 A 的置信度。
+  cam_crop_hard_label: false
+  cam_alpha_drop:
+  cam_alpha_crop:
+  # 擦除强度：1.0 = 硬擦除（峰值区置零）；0.7 = 只保留 30% 信号。
+  # 掩码本身只覆盖 7% 的格子（alpha=0.3），所以 strength 不能太小：
+  # 0.3 时特征总量只衰减 2.1%，辅助分支退化成主分支的复制品。
+  # 实测擦除后 top1：strength 0.3/0.5/0.7/1.0 -> 86.3/85.2/81.6/66.8（主分支 86.72）
+  cam_drop_strength: 1.0
+  cam_margin: 1.5               # 裁剪框的外扩倍数（边长 ×margin，面积 ×margin²）
+  # 混合图上把第二个类别（mixup/cutmix 贴进来的那类）的 CAM 也算一遍，
+  # 取两个 mask 的并集再框。实测两个框的 IoU 只有 0.062 —— 只裁 A 的框时，
+  # patch 里没有 B 的证据，却要求它输出 A+B 的软目标，监督是矛盾的。
+  # 代价：框面积 12% → 31%。干净 batch（mixup_p<1 时没混的）不受影响。
+  cam_crop_union: false
+  # 混合图上用**权重更大的那一类**算 CAM（默认用 batch["label"] = 样本 A）。
+  # 实测 mixup 上 51% 的样本 A 权重 < 0.5，此时 patch 主体是 B 而软目标偏向 B，
+  # 监督不一致。cutmix 的 batch 本来就不走 CAM，所以只影响 mixup 那一半。
+  cam_crop_majority: false
+  # union 那条分支单独的外扩倍数（留空 = 跟随 cam_margin）。
+  # 干净图的框只有 12%、union 框有 31.5%，用同一个 margin 会让两者差距更大。
+  cam_margin_union:
+  # 裁剪一致性：主分支 ↔ 裁剪分支的对称 KL（权重 0 = 关闭）。
+  # 裁剪看到的是放大后的局部，强迫两条路径同分布 = 让主干学会从「能被放大的
+  # 那部分」提取信息，而测试时不给放大。
+  cam_consistency: 0.0
+  cam_consistency_T: 2.0
+  # 多视图一致性：同一个 CAM 框，再用另一个外扩倍数裁一张（比如 1.6），
+  # 只和主分支做一致性、不接标签。留空 = 关闭；权重 0 = 只算不用。
+  cam_margin2:
+  cam_consistency2: 0.0
+  # 一致性教师视图的来源：
+  #   cam     = 用当前模型的 CAM 框裁出来的局部（默认，自洽但带噪声）
+  #   gt_head = 用 CUB 关键点裁出的头部图（**只用于训练**，测试完全不碰标注）
+  # 换 gt_head 是一个干净对照：一致性机制、权重、温度全不变，只换教师怎么来。
+  cam_teacher: cam
+
+  # ---- 四块重排（按 CAM 质心切 2×2，保持每块尺寸随机换位）----
+  # 质心落在交叉点上，所以 CAM 峰值区被切成四份散到四个角，"只看一处"被掐断；
+  # 其余内容全部保留，只是换了位置。整幅图尺寸不变、零插值。
+  # 实测（冻结模型）：打乱后 test top1 从 86.7% 掉到 80~84%，CAM 切与中心切差别 <1.5 点。
+  # 权重参考 crop：0.5 太大，从 0.1~0.2 起步。
+  cam_quad: 0.0
+  # quad 分支的逐 batch 触发概率（默认 1.0 = 每个可用 batch 都跑）。
+  # quad 是辅助分支不是图像混合，所以用概率控制它占多少 batch。
+  cam_quad_p: 1.0
+
+  # ---- 注意力模块（K 张可学习的注意力图 + 部位分类，见 model/attention.py）----
+  # 和 CAM 的区别：CAM 的通道组合由分类头权重定死；这里的 K 组通道组合是各自学的，
+  # 所以能分化成 K 个不同的部位探测器。只作用于训练，测试路径不变。
+  attn_weight: 0.0              # 部位分类损失的权重；0 = 关闭
+
+  # ---- 成对判别（API-Net，见 model/pair.py）----
+  # 错误是成对的时候（两个类几乎一样），单图分类器没有额外信息可用。
+  # 这一支让它看一张「最像的异类」，用差异通道做门控。
+  # 和 mixup/cutmix 可以共存：软目标按 batch 下标取，配对按主标签选。
+  pair_w: 1.0                   # 成对损失总权重；0 = 只算不用
+  pair_rank_w: 1.0              # 排名铰链系数（原文 λ = 1）
+  pair_eps: 0.05                # 排名铰链 margin（原文 ε = 0.05）
+  pair_p: 8                     # 每批类数
+  pair_k: 4                     # 每类张数（批大小 = p × k）
+  # 只换 P×K 采样、不加成对损失。用来把「采样方式变了」这个变量单独摘出来：
+  # 开了成对判别时它自动为真，这里只是给对照组用。
+  pk_sampler: false
+  # 硬负样本交叉熵（Sun et al. AAAI 2020 的 GCE）。0 = 关闭，用普通 CE。
+  # k>0 时主分支的 softmax 分母只保留得分最高的 k 个负类。
+  # 依据：我们的错误是对称的类对混淆（前 100 个格子占 53% 的错误），
+  # 真正竞争的是那一两个最像的负类。R50@448 原文 +1.4。
+  # ⚠️ 对**所有** batch 生效：硬标签 batch 用标准式，mixup/cutmix 的混合 batch 用
+  #    软目标版本（分母同样只留得分最高的 k 个非正类）。这条已按实现更正。
+  # ⚠️ 开启后 label_smoothing 对主分支失效（GCE 没有平滑版本）。
+  hard_neg_k: 0
+  # 熵正则（MaxEnt）：L -= γ·H(p)，最大化输出熵、抑制「错得自信」。0 = 关闭。
+  # 注意它和 label_smoothing / mixup 功能重叠，我们配方里已经有两项，γ 要取很小。
+  entropy_w: 0.0
+  # ---- 强视图（弱-强一致性，见 dataset/strong_view.py）----
+  # 每批在主分支之外，从**混图之后**的张量上再做一次几何强扰动（旋转/剪切/平移），
+  # 单独过一次 backbone。strong_ce 给它一个分类损失（防止它只是被蒸馏），
+  # strong_kl 再加一条「主分支→强视图」的非对称 KL（教师 detach）。
+  # A1 归因臂 = strong_ce 1.0 / strong_kl 0；A3 = strong_ce 1.0 / strong_kl 0.3。
+  # ⚠️ 不要用 TRAIN.rand_augment 来做强视图：那会同时改弱视图，基座变双变量。
+  strong_view: false
+  strong_ce: 0.0
+  strong_kl: 0.0
+  strong_T: 2.0
+  strong_erase_p: 0.0
+  # PMG 用：主分支（concat）损失权重 2，三路 stage 权重各 1（官方设置）
+  main_w: 1.0
+  # TokenLearner 的防塌缩正则总权重（熵目标 + 图间多样性）
+  tl_reg_w: 0.0
+  pmg_stage_w: 0.0
+  deep_sup_w: 0.0
+  # attn_pool 模块单独的学习率（留空 = 用 TRAIN.lr）。从零初始化的 Transformer
+  # 跟分类头共用 1e-3 未必合适，这一项要能单独调，否则"没学到"与"学了没用"分不开。
+  attn_lr:
+  # attn_pool 模块单独的 weight decay（留空 = 跟随 TRAIN.weight_decay）。
+  # 注意：输出层是零初始化的，而 weight decay 也在把参数往 0 拉，
+  # 两者方向相同，会压制模块长起来。所以这一项应当能单独关掉。
+  attn_wd:
+  # GlobalContext（插在 layer3→layer4 之间的全局自注意力）单独的 lr / weight decay。
+  # 留空时 lr 回落到 backbone_lr_scale（1.0 => 1e-3，是 layer3/4 的 20 倍），
+  # wd 回落到全局值。输出层零初始化 + wd=0.05 会持续把它往 0 拉，所以默认 wd 设 0。
+  gc_lr:
+  gc_wd: 0.0
+  # 部件注意力模块单独的 lr / weight decay（含义同 gc_*）
+  pa_lr:
+  pa_wd: 0.0
+  # 部件辅助监督（MA-CNN 的做法）：每个部件单独过分类头的 CE 权重，
+  # 以及部件之间重叠（散度）惩罚的权重。0 = 关闭。
+  # 只开 part_attn 不开这两项时，检测器只有最终融合特征的梯度，容易全部退化成同一处。
+  pa_aux_w: 0.0
+  pa_div_w: 0.0
+  # 训练期部件辅助分支的 CE / 一致性权重
+  pta_aux_w: 0.0
+  pta_cons_w: 0.0
+  pta_cons_T: 2.0
+  # 双路融合输出上的 CE 权重（0 = 关闭）。>0 时最终预测 = 整图 + β·裁剪放大。
+  cam_fuse_w: 0.0
+  # 两个假设分支各自的辅助 CE 权重（0 = 不加）
+  hyp_aux_w: 0.0
+  # 知识蒸馏：教师 checkpoint 路径（留空 = 关闭）。教师只用于训练，推理路径不变。
+  distill_ckpt: ""
+  distill_w: 0.0
+  distill_T: 2.0
+  # 教师置信度门控：教师的 top-1 概率低于这个值的样本不参与蒸馏（0 = 不门控）。
+  # 依据：分解显示蒸馏的负项（−0.48）全部来自"教师错而学生对"的样本。
+  distill_min_conf: 0.0
+  # 按标签门控：只在教师预测正确（教师 argmax == 真实标签）的样本上蒸馏。
+  # 训练标签已知，不构成泄漏；去掉的正是"教师错而学生对"那批有害样本。
+  distill_gate_label: false
+
+  log_every: 50                 # 每多少个 iteration 打一行日志
+
+EVAL:
+  batch_size: 64
+
+OUTPUT:
+  dir: outputs                  # 已被根 .gitignore 挡住，不会进 git
