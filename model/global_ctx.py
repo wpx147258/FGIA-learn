@@ -63,9 +63,17 @@ class GlobalContext(nn.Module):
 
     def __init__(self, channels: int = 1024, dim: int = 256, depth: int = 1,
                  heads: int = 4, mlp_ratio: float = 2.0, dropout: float = 0.0,
-                 use_pos: bool = True):
+                 use_pos: bool = True, detach_feat: bool = False,
+                 no_residual: bool = False, res_scale: float = 0.0):
         super().__init__()
         self.dim = int(dim)
+        # 与 PartAttention 对齐的三个开关（审计后统一）：
+        #   detach_feat —— 模块的损失不回传到主干（只用于诊断「模块自己学得起来吗」）
+        #   no_residual —— 前向不改特征图（配合别处的 logit 融合）
+        #   res_scale   —— 把残差范数限制在 GAP 范数的这个倍数（有界缩放，避免零初始化时梯度爆炸）
+        self.detach_feat = bool(detach_feat)
+        self.no_residual = bool(no_residual)
+        self.res_scale = float(res_scale)
         self.use_pos = bool(use_pos)
         self._pos_cache: torch.Tensor | None = None
         self.proj = nn.Conv2d(channels, dim, kernel_size=1)
@@ -100,6 +108,8 @@ class GlobalContext(nn.Module):
         return self._pos_cache.to(device=device, dtype=dtype)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.detach_feat:
+            x = x.detach()
         b, _, h, w = x.shape
         t = self.proj(x).flatten(2).transpose(1, 2)               # [B,N,dim]
         if self.use_pos:
@@ -115,6 +125,14 @@ class GlobalContext(nn.Module):
             g = x.detach().flatten(2).norm(dim=2).mean()
             self._last_ratio = float(
                 self._last_out_norm / g.clamp(min=1e-12))
+        if self.no_residual:
+            return x
+        if self.res_scale > 0:
+            # 有界缩放：s = r·g/(‖y‖+g)，初始 y≈0 时 s≈r，不会因除以 1e-6 而放大梯度
+            yn = y.flatten(1).norm(dim=1)                    # [B] 逐样本范数
+            gg = x.detach().flatten(1).norm(dim=1)
+            s = (self.res_scale * gg / (yn + gg).clamp_min(1e-6)).detach()
+            y = y * s[:, None, None, None]
         return x + y
 
     def pre_hook(self, module, inputs):
@@ -145,6 +163,9 @@ def build_global_context(backbone: nn.Module, mcfg: dict) -> GlobalContext | Non
         mlp_ratio=float(mcfg.get("gc_mlp", 2.0)),
         dropout=float(mcfg.get("gc_dropout", 0.0)),
         use_pos=bool(mcfg.get("gc_pos", True)),
+        detach_feat=bool(mcfg.get("gc_detach", False)),
+        no_residual=bool(mcfg.get("gc_no_residual", False)),
+        res_scale=float(mcfg.get("gc_res_scale", 0.0)),
     )
     # 跟随 backbone 当前的 device/dtype：如果有人在 .to(cuda) 之后才调用，
     # 不搬过去的话第一次 forward 会报 dtype 不匹配

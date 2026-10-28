@@ -96,6 +96,10 @@ MODEL:
   gc_mlp: 2.0
   gc_dropout: 0.0
   gc_pos: true
+  # 与 PartAttention 对齐的三个开关：detach / 完全去掉残差 / 残差幅度上限（有界缩放）
+  gc_detach: false
+  gc_no_residual: false
+  gc_res_scale: 0.0
   # GAP 初始化的内容注意力池化（model/attn_pool.py:ContentPool）。替换全局池化，
   # 仅 q 零初始化、Wk 保持随机：初始数学上等于 GAP，第一步 q 可学习，随后 Wk 可学习。
   content_pool: false

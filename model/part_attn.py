@@ -100,6 +100,8 @@ class PartAttention(nn.Module):
             self.group_ch = channels // self.num_parts
         else:
             kk = int(kernel); pad = kk // 2
+            if kk < 1 or kk % 2 == 0:
+                raise ValueError(f"pa_kernel 必须是正奇数（偶数核会改变空间尺寸），收到 {kk}")
             self.det = nn.Conv2d(channels, self.num_parts, kernel_size=kk, padding=pad)
             self.group_ch = channels
         # 部件身份嵌入：检测器是有编号的，注意力需要知道"我是第几个部件"
@@ -144,7 +146,7 @@ class PartAttention(nn.Module):
         # 直接套 hinge 会永远落在 margin 下方、等于没加正则。
         raw = self.det(feat).flatten(2)                  # [B,K,N]
         if self.norm_spatial:
-            raw = (raw - raw.mean(dim=-1, keepdim=True)) / raw.std(dim=-1, keepdim=True).clamp_min(1e-5)
+            raw = (raw - raw.mean(dim=-1, keepdim=True)) / raw.std(dim=-1, keepdim=True, correction=0).clamp_min(1e-5)
         if self.compete:
             logits = raw / self.tau
             A = logits.softmax(dim=1)                    # 每个位置在 K 个部件间竞争
@@ -229,7 +231,7 @@ class PartAttention(nn.Module):
         b, k, h, w = raw.shape
         raw = raw.flatten(2)
         if self.norm_spatial:
-            raw = (raw - raw.mean(dim=-1, keepdim=True)) / raw.std(dim=-1, keepdim=True).clamp_min(1e-5)
+            raw = (raw - raw.mean(dim=-1, keepdim=True)) / raw.std(dim=-1, keepdim=True, correction=0).clamp_min(1e-5)
         if self.compete:
             m = (raw / self.tau).softmax(dim=1)
         else:
@@ -246,10 +248,12 @@ class PartAttention(nn.Module):
         if self.no_residual:
             return output
         if self.res_scale > 0:
-            # y 是 [B,C]（池化后的残差向量），不是 4D 特征图
+            # y 是 [B,C]（池化后的残差向量），不是 4D 特征图。
+            # 用 s = r·g/(‖y‖+g)：初始 ‖y‖≈0 时 s≈r（有界），事后趋近 r·g/‖y‖。
+            # 旧写法 r·g/‖y‖ 在零初始化时 s≈r·g/1e-6，反传放大约 4e5 倍（审计发现）。
             g = output.mean(dim=(2, 3)).norm(dim=1)                 # [B]
-            yn = y.norm(dim=1).clamp_min(1e-6)                      # [B]
-            s = (self.res_scale * g / yn).detach()
+            yn = y.norm(dim=1)                                      # [B]
+            s = (self.res_scale * g / (yn + g).clamp_min(1e-6)).detach()
             y = y * s[:, None]
         return output + y[:, :, None, None]
 
@@ -275,6 +279,9 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
     if mcfg.get("pa_multiscale", False):
         return build_multiscale_parts(backbone, mcfg, num_classes)
     if mcfg.get("pa_slots", False):
+        if mcfg.get("pa_logit_fuse", False):
+            raise ValueError("SlotParts 没有通道组描述子（_last_z），不能和 pa_logit_fuse 同开；"
+                             "请用 pa_no_residual=False（残差出口）或改用 PartAttention")
         sl = SlotParts(
             channels=ch,
             num_parts=int(mcfg.get("pa_parts", 4)),
@@ -284,6 +291,10 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
             dropout=float(mcfg.get("pa_dropout", 0.0)),
             num_classes=int(num_classes),
         )
+        # 选项必须真的传下去（旧版静默忽略 detach / no_residual / res_scale）
+        sl.detach_feat = bool(mcfg.get("pa_detach", False))
+        sl.no_residual = bool(mcfg.get("pa_no_residual", False))
+        sl.res_scale = float(mcfg.get("pa_res_scale", 0.0))
         try:
             p = next(backbone.parameters())
             sl.to(device=p.device, dtype=p.dtype)
@@ -440,17 +451,21 @@ class SlotParts(nn.Module):
             attn = logits.softmax(dim=-1)                     # 每个 token 在 K 个 slot 间竞争
             attn = attn + self.eps
             attn = attn / attn.sum(dim=1, keepdim=True)       # 再按 token 归一化
+            # 负载均衡要用「归一化之前」的每个 slot 质量；归一化之后 sum 恒为 1，
+            # 损失会退化成常数 (1-K/N)^2，梯度约为 0（审计发现）。
             updates = torch.einsum("bnk,bnd->bkd", attn, v)   # [B,K,d]
             slots = self.gru(updates.reshape(-1, self.dim),
                              slots.reshape(-1, self.dim)).reshape(b, self.num_parts, self.dim)
             slots = slots + self.mlp(self.norm_slots(slots))
         # 空间分布（用于裁框与诊断）：每个 slot 在 N 个位置上的质量
-        a = attn.transpose(1, 2)                              # [B,K,N]
-        mass = a.sum(-1, keepdim=True).clamp_min(self.eps)
-        a_norm = a / mass
+        a = attn.transpose(1, 2)                              # [B,K,N]（已按 token 归一化）
+        a_norm = a / a.sum(-1, keepdim=True).clamp_min(self.eps)
         self._last_masks = a_norm.view(b, self.num_parts, h, w)
-        # 负载均衡：每个 slot 应占约 1/K 的 token 质量
-        self._last_div = (self.num_parts * ((mass.squeeze(-1) / n - 1.0 / self.num_parts) ** 2).sum(-1)).mean()
+        # 负载均衡用**跨 slot softmax 之后、token 归一化之前**的质量：
+        # raw_mass[b,k] = Σ_n softmax_slots(logits)[b,n,k]
+        with torch.no_grad():
+            raw = logits.softmax(dim=-1).sum(dim=1)            # [B,K]
+            self._last_div = (self.num_parts * ((raw / n - 1.0 / self.num_parts) ** 2).sum(-1)).mean()
         with torch.no_grad():
             ent = -(a_norm * a_norm.clamp_min(1e-9).log()).sum(-1)
             self._last_entropy = float(ent.mean())
@@ -477,10 +492,12 @@ class SlotParts(nn.Module):
         if self.no_residual:
             return output
         if self.res_scale > 0:
-            # y 是 [B,C]（池化后的残差向量），不是 4D 特征图
+            # y 是 [B,C]（池化后的残差向量），不是 4D 特征图。
+            # 用 s = r·g/(‖y‖+g)：初始 ‖y‖≈0 时 s≈r（有界），事后趋近 r·g/‖y‖。
+            # 旧写法 r·g/‖y‖ 在零初始化时 s≈r·g/1e-6，反传放大约 4e5 倍（审计发现）。
             g = output.mean(dim=(2, 3)).norm(dim=1)                 # [B]
-            yn = y.norm(dim=1).clamp_min(1e-6)                      # [B]
-            s = (self.res_scale * g / yn).detach()
+            yn = y.norm(dim=1)                                      # [B]
+            s = (self.res_scale * g / (yn + g).clamp_min(1e-6)).detach()
             y = y * s[:, None]
         return output + y[:, :, None, None]
 
@@ -562,9 +579,10 @@ class MultiScaleParts(nn.Module):
         t4p = self.norm(t[:, self.num_parts:])
         z4m = z4 + self.back4(t4p)                              # 初始 back=0 => z4m=z4
         self._last_z = z4m
-        # 散度诊断：对 layer4 的 K 张掩码算两两 JS（hinge 形式与 PartAttention 同标尺）。
-        # 旧版这里从不更新 _last_div，导致 pa_div_w 对 ms 系列全程是空转。
-        with torch.no_grad():
+        # 散度正则：对 layer4 的 K 张掩码算两两 JS（hinge 形式与 PartAttention 同标尺）。
+        # ⚠️ 必须在 no_grad 之外算 —— 否则 _last_div 有数值但没有梯度，
+        # pa_div_w / js_w 调多大都推不动检测器（审计 2026-10-29 发现）。
+        if self.js_w > 0:
             m4 = torch.sigmoid(self.det4(l4)).flatten(2)
             a4 = m4 / m4.sum(-1, keepdim=True).clamp_min(1e-6)
             mm = (a4[:, :, None, :] + a4[:, None, :, :]) / 2.0
@@ -574,8 +592,10 @@ class MultiScaleParts(nn.Module):
             js = 0.5 * (kl1 + kl1.transpose(1, 2))
             off_ = 1.0 - torch.eye(js.size(1), device=js.device)
             js_off = (js * off_).sum(dim=(1, 2)) / (js.size(1) * (js.size(1) - 1))
-            self._last_div = (self.js_target - js_off).clamp_min(0).mean() * self.js_w \
-                if self.js_w > 0 else torch.zeros((), device=l4.device)
+            self._last_div = (self.js_target - js_off).clamp_min(0).mean() * self.js_w
+        else:
+            with torch.no_grad():
+                self._last_div = torch.zeros((), device=l4.device)
         with torch.no_grad():
             self._last_ratio = float(self.back4(t4p).norm().mean() / z4.norm().mean().clamp_min(1e-12))
         return z4m

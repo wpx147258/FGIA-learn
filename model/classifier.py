@@ -253,6 +253,10 @@ class Classifier(nn.Module):
         z = pa._last_z                                   # [B,K,g]
         W = self.head.fc.weight                          # [C_out, C]
         b = self.head.fc.bias
+        # 部件分支如果用了通道重排（pa_perm），它的第 k 组对应原始通道 perm[k*g:(k+1)*g]；
+        # 这里必须把分类权重按同样的顺序重排，否则特征与权重通道错位（审计 2026-10-29）。
+        if getattr(pa, "perm", None) is not None:
+            W = W[:, pa.perm]
         k = z.shape[1]
         c = W.shape[1]
         if c % k != 0 or z.shape[-1] != c // k:
