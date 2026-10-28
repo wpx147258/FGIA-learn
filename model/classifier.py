@@ -174,12 +174,15 @@ class Classifier(nn.Module):
         self.deep_sup = deep_sup
         # 部位间自注意力：输出与 GAP 同维并相加（零初始化，初始等价于基线）
         self.attn_pool = attn_pool
+        # replace=True 时模块直接产出「替换 GAP」的池化特征，而不是残差
+        self.attn_replace = bool(getattr(attn_pool, "replace", False))
         # 自注意力可以接 layer4 也可以接 layer3（28x28，784 token）
         self.attn_from = attn_from
         # 最终特征图上的通道门控（乘法，初始≈恒等）
         self.se_gate = se_gate
         # 软空间注意力池化（TokenLearner）：输出与 GAP 同维相加，零初始化
         self.tokenlearner = tokenlearner
+        self.tl_replace = bool(getattr(tokenlearner, "replace", False))
 
     def _capture_parts(self):
         """取走部件注意力模块在**本次主干前向**里算出的部件描述子与散度项。
@@ -420,6 +423,8 @@ class Classifier(nn.Module):
             f0 = self.backbone.forward_features(x)
             src = self._to_feature_map(f0)
         pooled = f0 if getattr(self.head, "on_feature_map", False) else self.backbone.forward_head(f0)
+        if self.attn_replace:
+            return self.head(self.attn_pool(src))
         return self.head(pooled + self.attn_pool(src))
 
     def _forward_with_gate(self, x: torch.Tensor) -> torch.Tensor:
@@ -512,6 +517,8 @@ class Classifier(nn.Module):
         if self.tokenlearner is not None and not self.training:
             f0 = self.backbone.forward_features(x)
             feat = self._to_feature_map(f0)
+            if self.tl_replace:
+                return self.head(self.tokenlearner(feat))
             return self.head(self.backbone.forward_head(f0) + self.tokenlearner(feat))
         if self.attn_pool is not None and not self.training:
             return self._forward_with_attn(x)
@@ -556,6 +563,8 @@ class Classifier(nn.Module):
             if self.tokenlearner is not None:
                 f0 = self.backbone.forward_features(x)
                 feat = self._to_feature_map(f0)
+                if self.tl_replace:
+                    return self.head(self.tokenlearner(feat))
                 return self.head(self.backbone.forward_head(f0) + self.tokenlearner(feat))
             if self.pa_logit_fuse:
                 f0 = self.backbone.forward_features(x)
@@ -593,9 +602,9 @@ class Classifier(nn.Module):
                 self.head, "on_feature_map", False) else feat
         if self.attn_pool is not None:
             src = getattr(self, "_ap_feat", None) if self.attn_from == "layer3" else feat
-            pooled = pooled + self.attn_pool(src)
+            pooled = self.attn_pool(src) if self.attn_replace else pooled + self.attn_pool(src)
         if self.tokenlearner is not None:
-            pooled = pooled + self.tokenlearner(feat)
+            pooled = self.tokenlearner(feat) if self.tl_replace else pooled + self.tokenlearner(feat)
             if self.tokenlearner._reg is not None:
                 out_reg = self.tokenlearner._reg
         mge_logits = self.mge() if self.mge is not None else None
@@ -791,7 +800,8 @@ def build_model(cfg: dict) -> Classifier:
             js_target=float(mcfg.get("tl_js_target", 0.35)),
             attn_depth=int(mcfg.get("tl_attn_depth", 0)),
             attn_heads=int(mcfg.get("tl_attn_heads", 4)),
-            readout=str(mcfg.get("tl_readout", "mean")))
+            readout=str(mcfg.get("tl_readout", "mean")),
+            replace=bool(mcfg.get("tl_replace", False)))
 
     attn_pool = None
     if mcfg.get("attn_pool", False):
@@ -815,6 +825,7 @@ def build_model(cfg: dict) -> Classifier:
             heads=int(mcfg.get("attn_heads", 4)),
             use_pos=bool(mcfg.get("attn_pos", False)),
             readout=str(mcfg.get("attn_readout", "mean")),
+            replace=bool(mcfg.get("attn_replace", False)),
             dropout=float(mcfg.get("dropout", 0.0)))
 
     deep_sup = None

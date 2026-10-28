@@ -37,7 +37,7 @@ class AttnPool(nn.Module):
     def __init__(self, in_channels: int = 2048, out_dim: int = 2048, dim: int = 768,
                  tokens: int = 196, depth: int = 1, heads: int = 8,
                  mlp_ratio: float = 2.0, dropout: float = 0.0, use_pos: bool = False,
-                 readout: str = "mean"):
+                 readout: str = "mean", replace: bool = False):
         super().__init__()
         self.tokens = int(tokens)
         self.use_pos = bool(use_pos)
@@ -66,10 +66,25 @@ class AttnPool(nn.Module):
             self.blocks = nn.Identity()
         self.norm = nn.LayerNorm(dim)
 
-        # 零初始化：模块初始输出恒为 0，模型与基线逐位等价
-        self.out = nn.Linear(dim, out_dim)
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
+        # 两种出口：
+        #   residual（默认）：零初始化，输出作为**残差**加回 GAP —— 初始等价基线，
+        #                     但多出一条通往分类器的通路；
+        #   replace：直接把注意力池化的结果**替换** GAP，用 back=pinv(proj) 把 dim 维
+        #            投影回 C 维，并用 alpha 在 back(v) 与 GAP 之间混合（初始 0.5，
+        #            此时 back(v)≈GAP，所以初始仍等于 GAP）。用来检验「额外残差通路
+        #            本身」是否有害。
+        self.replace = bool(replace)
+        if self.replace:
+            # ⚠️ 不可行：proj 是 C->dim 的降维（dim=256 < C=2048），从 dim 维还原 C 维
+            # 只是最小二乘投影，初始输出与 GAP 的差距约 0.27（logit 尺度），
+            # 不是「初始等于 GAP」。要精确替换 GAP，必须把注意力权重直接作用在
+            # C 维原始特征上（见 TokenLearner 的 replace 分支）。
+            raise ValueError("AttnPool 的 replace 模式不可用（dim < C 无法还原 GAP）；"
+                             "请用 MODEL.tokenlearner + tl_replace 或 MODEL.content_pool")
+        else:
+            self.out = nn.Linear(dim, out_dim)
+            nn.init.zeros_(self.out.weight)
+            nn.init.zeros_(self.out.bias)
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
         """feat [B,C,H,W] -> [B,C]，与 GAP 输出同维，供直接相加。"""
@@ -84,13 +99,23 @@ class AttnPool(nn.Module):
                 x = x + self.pos[:, : x.size(1)]
             t = torch.cat([gap.unsqueeze(1), x], dim=1)  # [B,N+1,dim]
             t = self.blocks(t)
-            x = self.norm(t)[:, 0]                       # 读第 50 个 token（更新后）
+            x = self.norm(t)[:, 0]                       # 读第 0 个 token（更新后）
+            t_mean = t[:, 0]
         else:
             if self.pos is not None:
                 x = x + self.pos[:, : x.size(1)]
-            x = self.blocks(x)
-            x = self.norm(x).mean(dim=1)                 # token 平均
-        y = self.out(x)
+            t = self.blocks(x)
+            x = self.norm(t).mean(dim=1)                 # token 平均
+            t_mean = t.mean(dim=1)
+        if self.replace:
+            # 用未过 LayerNorm 的平均 token：此时它正是 proj(GAP)，back 的伪逆能还原 GAP
+            t_all = t if self.readout == "cls" else None
+            x_raw = (t_all[:, 0] if t_all is not None else t_mean)
+            gap = feat.mean(dim=(2, 3))
+            a = torch.sigmoid(self.alpha)
+            y = a * self.back(x_raw) + (1.0 - a) * gap
+        else:
+            y = self.out(x)
         # 记两个量给日志：模块输出的绝对范数，以及它与 GAP 特征的相对幅度。
         # 后者才是关键 —— 残差要从 0 长到和 GAP 可比的数量级，才可能真正影响分类。
         # 训练和推理都记：否则指标要等第一次验证才出现，CSV 表头会缺列
@@ -171,7 +196,7 @@ class TokenLearner(nn.Module):
                  ent_target: float = 0.0, div_w: float = 0.0,
                  js_w: float = 0.0, js_target: float = 0.35,
                  attn_depth: int = 0, attn_heads: int = 4,
-                 readout: str = "mean"):
+                 readout: str = "mean", replace: bool = False):
         super().__init__()
         self.s = int(s_tokens)
         self.dim = int(dim)
@@ -181,9 +206,19 @@ class TokenLearner(nn.Module):
             nn.Linear(dim, self.s),
         )
         self.norm = nn.LayerNorm(dim)
-        self.out = nn.Linear(dim, out_dim)
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
+        self.replace = bool(replace)
+        if self.replace:
+            if int(attn_depth) > 0 or readout != "mean":
+                raise ValueError("TokenLearner 的 replace 只支持 attn_depth=0 且 readout=mean")
+            # 替换式池化：学到的空间权重直接作用在 C 维原始特征上，输出就在 C 空间。
+            # score 末层置零 => 初始权重均匀 => 输出逐位等于 GAP（唯一能精确做到的结构）。
+            self.out = None
+            nn.init.zeros_(self.score[-1].weight)
+            nn.init.zeros_(self.score[-1].bias)
+        else:
+            self.out = nn.Linear(dim, out_dim)
+            nn.init.zeros_(self.out.weight)
+            nn.init.zeros_(self.out.bias)
         self._last_entropy = None
         # 防塌缩有两条独立的轴，别混用：
         #   ent_target —— 管单张图的集中程度；均匀覆盖 k 个位置时 H=ln k。
@@ -205,6 +240,7 @@ class TokenLearner(nn.Module):
         if readout not in ("mean", "cls"):
             raise ValueError(f"readout 只能是 mean | cls，收到 {readout!r}")
         self.readout = readout
+        self.attn_depth = int(attn_depth)
         if attn_depth > 0:
             layer = nn.TransformerEncoderLayer(
                 d_model=dim, nhead=attn_heads, dim_feedforward=int(dim * 2),
@@ -260,6 +296,11 @@ class TokenLearner(nn.Module):
             jr = self.js_w * (self.js_target - js_off).clamp_min(0).mean()
             reg = jr if reg is None else reg + jr
         self._reg = reg
+        if self.replace:
+            # w [B,N,S] 直接加权 C 维原始特征；初始 w 均匀 => 输出 == GAP
+            f_c = feat.flatten(2).transpose(1, 2)                # [B,N,C]
+            z_c = torch.einsum("bns,bnc->bsc", w, f_c)           # [B,S,C]
+            return z_c.mean(dim=1)
         return self.out(v)
 
 

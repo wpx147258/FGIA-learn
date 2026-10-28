@@ -71,6 +71,9 @@ MODEL:
   tl_attn_depth: 0
   tl_attn_heads: 4
   tl_readout: mean
+  # replace：直接把注意力池化结果替换 GAP（back=pinv(proj)，alpha 初始 0.5，
+  # 此时 back(v)≈GAP，所以初始仍等于 GAP）。用来检验「额外残差通路」本身是否有害。
+  tl_replace: false
   # CNN 特征图 -> token 序列 -> 轻量自注意力（综述 V-D 的「部位间相互依赖」）。
   # 输出与 GAP 同维并相加，输出层零初始化 => 训练第 0 步与基线逐位等价。
   # attn_tokens：49 = 先 2x2 平均池化成 7x7；196 = 直接用 14x14。
@@ -189,6 +192,8 @@ MODEL:
   # AttnPool 的读出方式：mean = token 平均；cls = 额外一个全局 token（初始 = GAP），
   # 拼在序列最前面一起过自注意力，最后读它自己（token 之间会互相看）。pos 只加给空间 token。
   attn_readout: mean
+  # 同上：replace=true 时用注意力池化替换 GAP，而不是加残差
+  attn_replace: false
   # 分类头的 dropout（只正则 410K 参数的线性头）
   dropout: 0.0
   # 线性头 FC 前加一层 BatchNorm1d。不同预训练权重的特征幅度差很多
