@@ -39,11 +39,30 @@ def main():
     with open(root / "bounding_boxes.txt") as f:
         gt_px = {int(l.split()[0]): tuple(map(float, l.split()[1:])) for l in f if len(l.split()) == 5}
     from PIL import Image
+    # GT 框在**原图**坐标里，而网络看到的是「短边缩放到 resize_size，再中心裁 image_size」。
+    # 之前直接把原图归一化坐标按 h×h 网格切，忽略了这层平移/缩放：短边会被裁掉
+    # (resize_size − image_size) 个像素，框靠边时误差不小，而富集比是判据本身。
+    # 这里把框过一遍同样的几何变换，再归一化到网络输入。
+    data_cfg = resolve_data_config(m.backbone)
+    crop_pct = data_cfg.get("crop_pct") or 1.0
+    img_size = 448
+    resize_size = int(round(img_size / crop_pct))
     cache = {}
     def gbox(i):
         if i not in cache:
             W, H = Image.open(root / "images" / paths[i]).size
-            x, y, w, h = gt_px[i]; cache[i] = (x / W, y / H, (x + w) / W, (y + h) / H)
+            s = resize_size / min(W, H)
+            if W >= H:
+                nw, nh = int(resize_size * W / H), resize_size
+            else:
+                nw, nh = resize_size, int(resize_size * H / W)
+            off_x, off_y = (nw - img_size) / 2.0, (nh - img_size) / 2.0
+            x, y, w, h = gt_px[i]
+            x0 = min(max((x * s - off_x) / img_size, 0.0), 1.0)
+            y0 = min(max((y * s - off_y) / img_size, 0.0), 1.0)
+            x1 = min(max(((x + w) * s - off_x) / img_size, 0.0), 1.0)
+            y1 = min(max(((y + h) * s - off_y) / img_size, 0.0), 1.0)
+            cache[i] = (x0, y0, x1, y1)
         return cache[i]
 
     ds = CUBDataset(root, "test", build_transform(resolve_data_config(m.backbone), 448, train=False), 200)
