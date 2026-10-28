@@ -88,6 +88,7 @@ def build_dataloaders(cfg: dict, backbone,
             part_transform=build_transform(data_cfg, dcfg["image_size"],
                                            train=is_train, tcfg=tcfg, mild=True),
             # 只有训练需要这些额外视图；评估时算它们是纯浪费（测试不走辅助分支）
+            part_pad=float(cfg["TRAIN"].get("part_pad") or 0.35),
             extra_views=extra_views if is_train else (),
             part_transform_extra=(
                 build_transform(data_cfg, part_size, train=is_train, tcfg=tcfg, mild=True)
