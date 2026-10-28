@@ -819,6 +819,8 @@ def build_model(cfg: dict) -> Classifier:
             dropout=float(mcfg.get("tl_dropout") if mcfg.get("tl_dropout") is not None
                           else mcfg.get("dropout", 0.0)),
             ent_target=float(mcfg.get("tl_ent_target", 0.0)),
+            ent_mode=str(mcfg.get("tl_ent_mode", "target")),
+            ent_floor=float(mcfg.get("tl_ent_floor", 0.5)),
             div_w=float(mcfg.get("tl_div_w", 0.0)),
             js_w=float(mcfg.get("tl_js_w", 0.0)),
             js_target=float(mcfg.get("tl_js_target", 0.35)),

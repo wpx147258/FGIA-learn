@@ -195,6 +195,7 @@ class TokenLearner(nn.Module):
                  s_tokens: int = 8, dropout: float = 0.0,
                  ent_target: float = 0.0, div_w: float = 0.0,
                  js_w: float = 0.0, js_target: float = 0.35,
+                 ent_mode: str = "target", ent_floor: float = 0.5,
                  attn_depth: int = 0, attn_heads: int = 4,
                  readout: str = "mean", replace: bool = False):
         super().__init__()
@@ -228,6 +229,15 @@ class TokenLearner(nn.Module):
         #                 （实测把熵拉到 2.0 后，八张图仍可能是同一张的副本）。
         # 旧 div 的 einsum 未计算图间重叠，div_w 也未乘入损失；并非完全无梯度，见类 docstring。
         self.ent_target = float(ent_target)
+        # ent_mode:
+        #   "target" —— 双侧惩罚 (ent − target)²。⚠️ 它同时会「把太尖的图推开」，
+        #               在残差出口下会把部件推到背景上去（实测富集比 0.30×）。
+        #   "floor"  —— 单侧惩罚 relu(floor − ent)²。只防「塌成点」，不强迫摊开，
+        #               更适合「让 CE 决定部件在哪、正则只兜底」。
+        if ent_mode not in ("target", "floor"):
+            raise ValueError(f"ent_mode 只能是 target | floor，收到 {ent_mode!r}")
+        self.ent_mode = ent_mode
+        self.ent_floor = float(ent_floor)
         self.div_w = float(div_w)
         # JS 正则：当每张图片的图对平均 JS 低于 js_target 时施加惩罚。
         # 分布相同 JS=0，支撑完全不重叠 JS=ln2；仅对支撑大小相同的均匀分布，
@@ -268,7 +278,9 @@ class TokenLearner(nn.Module):
         with torch.no_grad():
             self._last_entropy = float(ent.mean())
         reg = None
-        if self.ent_target > 0:
+        if self.ent_mode == "floor" and self.ent_floor > 0:
+            reg = (self.ent_floor - ent).clamp_min(0).pow(2).mean()
+        elif self.ent_target > 0:
             reg = ((ent - self.ent_target) ** 2).mean()
         if self.div_w > 0:
             # ov[b,i,j] = sum_n w[b,n,i] * w[b,n,j]，形状 [B,S,S]。

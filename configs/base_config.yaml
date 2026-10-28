@@ -63,6 +63,9 @@ MODEL:
   #    旧正则可能影响梯度，但不符合设计。现已改为 w^T w 并乘 div_w。
   #    相同的均匀图内积也仅为 1/N；若需判断分布是否相同，可观察 JS。
   tl_ent_target: 0.0
+  # ent 正则形式：target = 双侧 (ent−target)²；floor = 单侧 relu(floor−ent)²（只防塌成点）
+  tl_ent_mode: target
+  tl_ent_floor: 0.5
   tl_js_w: 0.0
   tl_js_target: 0.35
   tl_div_w: 0.0
