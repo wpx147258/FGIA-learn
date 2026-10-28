@@ -48,3 +48,9 @@
        5) 我的线性探针结论被判定为过度解读，已在 §14.1 收紧口径。
        → 行动：本地 queueRR 跑 4 个 gt_head 特权裁剪格子；同时修了「gt_head 在 cutmix batch
          被整体跳过」的 bug（否则七成监督被砍）。
+[05:05] 多部位特权裁剪落地（代码 + 数据都验过）：
+       dataset 按关键点裁 wing(9,13)/tail(14)（缺失退回 body 框以保证批内键一致），
+       CamAux 每路共享骨干重编码 + 硬标签 CE（TRAIN.cam_part_views / cam_part_w），
+       评估路径不经过。抽样核对过 head/body/wing/tail 的裁剪图，几何正确。
+       远程 batch4 已换成四格：gt_head / +body / +wing / +wing+tail（原 concat 轮存档为
+       scripts/remote_batch4_concat_later.sh，按审查意见暂缓：concat−mean 只有 +0.20）。
