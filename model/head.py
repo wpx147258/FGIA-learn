@@ -1,7 +1,4 @@
 """分类头。
-
-现在只有线性头。后续要加属性头 / 部位头，都写在这个文件里，
-然后在 HEADS 里登记一行，config 里的 `MODEL.head` 就能选到。
 """
 
 from __future__ import annotations
@@ -35,11 +32,6 @@ class LinearHead(nn.Module):
     def cam_weight(self, feat_dim: int) -> torch.Tensor:
         """CAM 用的分类权重 [num_classes, C]，和 backbone 特征图的通道维对齐。"""
         return self.fc.weight
-
-
-# 名字 -> 构造器。加新头在这里加一行即可。
-
-
 
 
 

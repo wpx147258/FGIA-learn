@@ -38,12 +38,12 @@ MODEL:
   pmg_feature_size: 512
   # 深度监督：在 layer3 上加一路辅助分类器（只训练时用，测试路径不变）
   deep_sup: false
-  # SE 通道注意力：插到 ResNet 每个 bottleneck 之后（保留原预训练权重）。
+  # SE 通道注意力：插到每个 bottleneck 的残差分支上（标准 SE-ResNet，保留原预训练权重）。
   # 参数约 +2.8M。需要骨干里有 Bottleneck 结构。
   se: false
-  # 最终特征图上的通道门控（乘法，初始≈恒等）。注意与 MODEL.se 不同：
-  # MODEL.se 是往每个 bottleneck 里插，需要改 block 的 forward；
-  # se_gate 只在最后一张特征图上做一次，不碰残差路径。
+  # 最终特征图上的残差式通道门控（out = feat*(1+delta)，delta 初始 0，初始恒等）。
+  # 与 MODEL.se 不同：MODEL.se 是标准 SE-ResNet（插每个 bottleneck 的残差分支）；
+  # se_gate 只在最终特征图上做一次乘性残差门控，作为更轻的对照。
   se_gate: false
   # 软空间注意力池化（TokenLearner）：学 S 张空间权重图，各得一 token，平均后与 GAP 相加。
   # 与 attn_pool 的区别：不改 token 之间的关系，只改聚合方式。输出层零初始化。
@@ -148,6 +148,9 @@ MODEL:
   attn_heads: 4
   attn_pos: false            # 位置编码。文献里 non-local/GCNet/DANet 都不加，
                              # 但 PART 在 CUB 上的消融显示可学习绝对位置编码值 +0.6~0.7
+  # AttnPool 的读出方式：mean = token 平均；cls = 额外一个全局 token（初始 = GAP），
+  # 拼在序列最前面一起过自注意力，最后读它自己（token 之间会互相看）。pos 只加给空间 token。
+  attn_readout: mean
   # 分类头的 dropout（只正则 410K 参数的线性头）
   dropout: 0.0
   # 线性头 FC 前加一层 BatchNorm1d。不同预训练权重的特征幅度差很多

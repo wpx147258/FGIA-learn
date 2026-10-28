@@ -32,13 +32,18 @@ import torch.nn as nn
 
 class AttnPool(nn.Module):
     """把特征图压成 token 序列做自注意力，输出与池化特征同维的残差。"""
+    ### Q ：采用 readout: = "cls" 是否建议depth>1?
 
     def __init__(self, in_channels: int = 2048, out_dim: int = 2048, dim: int = 768,
                  tokens: int = 196, depth: int = 1, heads: int = 8,
-                 mlp_ratio: float = 2.0, dropout: float = 0.0, use_pos: bool = False):
+                 mlp_ratio: float = 2.0, dropout: float = 0.0, use_pos: bool = False,
+                 readout: str = "mean"):
         super().__init__()
         self.tokens = int(tokens)
         self.use_pos = bool(use_pos)
+        if readout not in ("mean", "cls"):
+            raise ValueError(f"readout 只能是 mean | cls，收到 {readout!r}")
+        self.readout = readout
         # 49 = 先在特征图上做 2x2 平均池化；其余（196 / 784）= 不池化，直接用全部位置。
         # 文献调研的结论：细粒度上主流是 1x1 降维后 flatten 全部位置，
         # 没有工作用 2x2 池化到 49，所以 49 只作为最后面对照保留。
@@ -70,10 +75,21 @@ class AttnPool(nn.Module):
         """feat [B,C,H,W] -> [B,C]，与 GAP 输出同维，供直接相加。"""
         x = self.pre_pool(feat)
         x = self.proj(x).flatten(2).transpose(1, 2)     # [B,N,dim]
-        if self.pos is not None:
-            x = x + self.pos[:, : x.size(1)]
-        x = self.blocks(x)
-        x = self.norm(x).mean(dim=1)                    # token 平均
+        if self.readout == "cls":
+            # 全局 token：初始 = N 个 token 的平均（GAP），拼在序列最前面。
+            # 它不带位置编码（是全局表示，不是某个空间格子）；经过自注意力后
+            # 吸收其它 token 的信息，读出它自己作为聚合结果。
+            gap = x.mean(dim=1)                          # [B,dim]
+            if self.pos is not None:
+                x = x + self.pos[:, : x.size(1)]
+            t = torch.cat([gap.unsqueeze(1), x], dim=1)  # [B,N+1,dim]
+            t = self.blocks(t)
+            x = self.norm(t)[:, 0]                       # 读第 50 个 token（更新后）
+        else:
+            if self.pos is not None:
+                x = x + self.pos[:, : x.size(1)]
+            x = self.blocks(x)
+            x = self.norm(x).mean(dim=1)                 # token 平均
         y = self.out(x)
         # 记两个量给日志：模块输出的绝对范数，以及它与 GAP 特征的相对幅度。
         # 后者才是关键 —— 残差要从 0 长到和 GAP 可比的数量级，才可能真正影响分类。
@@ -87,29 +103,31 @@ class AttnPool(nn.Module):
 
 
 class SEGate(nn.Module):
-    """通道注意力（只作用在最终特征图上，不碰残差路径）。
+    """残差式通道门控：out = feat * (1 + delta)，delta 初始 0。
 
-    为什么不用「插进每个 bottleneck」那种写法：SE-ResNet 原文是把 SE 放在
-    残差分支上（out = x + SE(F(x))），捷径 x 不受影响。从外部给整个 block 的输出
-    乘一个门（out = SE(x + F(x))）会把捷径也衰减掉，16 个 block 连乘 0.5 之后
-    特征直接归零 —— 实测第一轮准确率 1%，就是这么来的。
+    旧版是绝对门控（out = feat * sigmoid(...)），乘在完整特征上、没有捷径保底，
+    门学偏会整体缩放特征。这里改成**乘性残差**：缩放因子 = 1 + delta，delta 从 0
+    学起，初始恒等（等价基线），学到的是「相对恒等的缩放增量」。
+    delta 用 tanh 限制在 (-1,1)，保证 1+delta ∈ (0,2) 恒为正，通道不会被翻转为负。
 
-    这里改成只在最后一张特征图上做一次通道门控，并用偏置初始化让门在初始时≈1，
-    保证模型起始与基线等价。
+    为什么加在最终特征图上而不是插进每个 bottleneck：标准 SE-ResNet（残差分支上）
+    现在由 MODEL.se / backbone.add_se_blocks 提供；这里只做最终特征图上的一次
+    乘性残差门控，作为更轻的对照。
     """
 
-    def __init__(self, channels: int, reduction: int = 16, init_bias: float = 6.0):
+    def __init__(self, channels: int, reduction: int = 16):
         super().__init__()
         mid = max(8, channels // reduction)
         self.reduce = nn.Conv2d(channels, mid, 1)
         self.expand = nn.Conv2d(mid, channels, 1)
-        nn.init.zeros_(self.expand.weight)          # 初始时门只由偏置决定
-        nn.init.constant_(self.expand.bias, init_bias)   # sigmoid(4)≈0.982，≈恒等
+        # delta 初始 0：expand 零初始化 -> tanh(0)=0 -> 1+delta=1（恒等）
+        nn.init.zeros_(self.expand.weight)
+        nn.init.zeros_(self.expand.bias)
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
         s = feat.mean(dim=(2, 3), keepdim=True)
-        s = torch.sigmoid(self.expand(torch.relu(self.reduce(s))))
-        return feat * s
+        delta = torch.tanh(self.expand(torch.relu(self.reduce(s))))
+        return feat * (1.0 + delta)
 
 
 class TokenLearner(nn.Module):
