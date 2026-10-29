@@ -196,6 +196,7 @@ class TokenLearner(nn.Module):
                  ent_target: float = 0.0, div_w: float = 0.0,
                  js_w: float = 0.0, js_target: float = 0.35, js_reduce: str = "mean",
                  ent_mode: str = "target", ent_floor: float = 0.5,
+                 ent_ceiling: float = 0.0,
                  attn_depth: int = 0, attn_heads: int = 4,
                  readout: str = "mean", replace: bool = False):
         super().__init__()
@@ -249,10 +250,14 @@ class TokenLearner(nn.Module):
         #               在残差出口下会把部件推到背景上去（实测富集比 0.30×）。
         #   "floor"  —— 单侧惩罚 relu(floor − ent)²。只防「塌成点」，不强迫摊开，
         #               更适合「让 CE 决定部件在哪、正则只兜底」。
-        if ent_mode not in ("target", "floor"):
-            raise ValueError(f"ent_mode 只能是 target | floor，收到 {ent_mode!r}")
+        if ent_mode not in ("target", "floor", "ceiling"):
+            raise ValueError(f"ent_mode 只能是 target | floor | ceiling，收到 {ent_mode!r}")
         self.ent_mode = ent_mode
         self.ent_floor = float(ent_floor)
+        # ceiling —— 只惩罚「摊得太开」的单侧上限：relu(ent − ceiling)²。
+        # 与 floor（只防塌缩）互为镜像。用户判断：权重应当集中（部件是局部区域），
+        # 而不该摊到 ~7 格以上；同时允许图与图之间大幅重叠（JS 目标可以很低）。
+        self.ent_ceiling = float(ent_ceiling)
         self.div_w = float(div_w)
         # JS 正则：当每张图片的图对平均 JS 低于 js_target 时施加惩罚。
         # 分布相同 JS=0，支撑完全不重叠 JS=ln2；仅对支撑大小相同的均匀分布，
@@ -302,6 +307,10 @@ class TokenLearner(nn.Module):
         reg = None
         if self.ent_mode == "floor" and self.ent_floor > 0:
             reg = (self.ent_floor - ent).clamp_min(0).pow(2).mean()
+        elif self.ent_mode == "ceiling" and self.ent_ceiling > 0:
+            # 只压「太散」，不推「更尖」：已经比 ceiling 更集中时梯度为 0，
+            # 不会像双侧 target 那样把已经很尖的图反向推回去。
+            reg = (ent - self.ent_ceiling).clamp_min(0).pow(2).mean()
         elif self.ent_target > 0:
             reg = ((ent - self.ent_target) ** 2).mean()
         if self.div_w > 0:

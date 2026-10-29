@@ -22,6 +22,11 @@ BASE=(
   MODEL.pa_depth=1 TRAIN.pa_div_w=1.0 TRAIN.pa_aux_w=0.25 TRAIN.pa_lr=5.0e-4
   MODEL.pa_parts=4
 )
+# 先补一格「更极端的集中」：熵上限 0.5（≈1.6 格），用户判断权重应更集中
+run r50_tl_ceil05 MODEL.tokenlearner=true MODEL.tl_dropout=0.0 MODEL.tl_replace=true \
+    MODEL.tl_ent_mode=ceiling MODEL.tl_ent_ceiling=0.5 MODEL.tl_js_w=0.5 MODEL.tl_js_target=0.05 \
+    TRAIN.tl_reg_w=0.5 TRAIN.tl_aux_w=0.5
+
 name=r50_pa4_l3_k4b
 echo "[$(date '+%F %T')] START $name" >> "$LOG"
 "$PY" train.py "${BASE[@]}" EXP_NAME="$name" > "logs/${name}_train.log" 2>&1

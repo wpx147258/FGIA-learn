@@ -833,6 +833,7 @@ def build_model(cfg: dict) -> Classifier:
             ent_target=float(mcfg.get("tl_ent_target", 0.0)),
             ent_mode=str(mcfg.get("tl_ent_mode", "target")),
             ent_floor=float(mcfg.get("tl_ent_floor", 0.5)),
+            ent_ceiling=float(mcfg.get("tl_ent_ceiling", 0.0)),
             div_w=float(mcfg.get("tl_div_w", 0.0)),
             js_w=float(mcfg.get("tl_js_w", 0.0)),
             js_target=float(mcfg.get("tl_js_target", 0.35)),
