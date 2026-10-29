@@ -31,10 +31,10 @@ waitnames () { local pat="$1"
   for _ in $(seq 1 60); do pgrep -f "$pat" >/dev/null 2>&1 && break; sleep 20; done
   while pgrep -f "$pat" >/dev/null 2>&1; do sleep 30; done; }
 
-launch 0 r50_all_parand8   $PA8 MODEL.pa_random_masks=true
-launch 1 r50_all_pa4k16    $PA8 MODEL.pa_parts=16
-launch 2 r50_all_pa4k8_s7  $PA8 SEED=7
-launch 3 r50_all_pa4k8_l3  $PA8 MODEL.pa_from=layer3
+# parand8 已经在 01:53 用 GPU3 的 35 分钟空档提前起了（见 /root/launch_parand8.sh），这里不再重复启动
+launch 0 r50_all_pa4k16    $PA8 MODEL.pa_parts=16
+launch 1 r50_all_pa4k8_s7  $PA8 SEED=7
+launch 2 r50_all_pa4k8_l3  $PA8 MODEL.pa_from=layer3
 
 waitnames "EXP_NAME=(r50_all_parand8|r50_all_pa4k16|r50_all_pa4k8_s7|r50_all_pa4k8_l3)$"
 echo "[$(date '+%F %T')] PA 四格训练结束，评测" >> "$LOG"
