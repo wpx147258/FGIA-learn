@@ -114,3 +114,11 @@
        已写成三轮脚本 /root/restore_plan.sh，并由 /root/chain_restore.sh 挂到第一轮之后自动执行。
        注意 r50_rerank2_ctrl 在原队列里与 rerank2 配置完全相同（疑似复制粘贴错误），未纳入。
        强监督项（gth_w_s3）按用户要求继续暂停，不补。
+[09:50] 用户提醒：OPTIMIZATION_BACKLOG 的 P0/P1 对齐臂也没跑。核对确认：
+       · 「dropout 对齐」（attn_dropout=0 / tl_dropout=0）—— AttnPool/TL 用 0.1，
+         PartAttention/GlobalContext 用 0，跨族比较一直带着这个混淆，从未做对齐臂；
+       · attn_tokens=49（只有 10/26 的四视图版 89.13，单视图没跑）；
+       · attn_depth=0 控制臂（单视图没跑）；
+       · attn_pos=true、attn_dim=512/heads=8（P1，未跑）。
+       已加第 E 轮（/root/restore_phaseE.sh）：attnp_t49_sv、attnp_d0_sv、attnp_nodrop、tl_nodrop，
+       挂在 restore_plan 之后自动执行。
