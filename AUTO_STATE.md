@@ -122,3 +122,8 @@
        · attn_pos=true、attn_dim=512/heads=8（P1，未跑）。
        已加第 E 轮（/root/restore_phaseE.sh）：attnp_t49_sv、attnp_d0_sv、attnp_nodrop、tl_nodrop，
        挂在 restore_plan 之后自动执行。
+[09:56] 远程第一轮开跑：r50_gc（GPU0，24.97M 参数，含 GlobalContext ~1M）、r50_clip_gap（GPU2）；
+       gc_ctrl 与 clip_ap 在等 GPU1/GPU3 上的 pa4 两格（ep33/34）结束。
+       tl_ent3_aux（ep49 val 86.20）与 tl_ent3_aux_res（ep49 val 87.41）训练已结束但尚未评测，
+       等有整卡空出再跑 test_tta（EVAL.batch_size=64 在 448 下要 ~5GB，不能与训练抢）。
+       本地 attnp_cls_d2 在 ep11。
