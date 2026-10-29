@@ -87,3 +87,7 @@
        batch6 的 r50_gth_pad08_attn 因此没跑起来，已在 GPU2 单独重启（其余三格正常）。
        本地 queueTT 的 cam_head_pc 已在 07:49 起跑（之前的 watcher 有 80 分钟上限，
        超时退出导致 GPU 空了几分钟——之后 watcher 一律给足时长）。
+[08:35] batch6 前两格：cam_head_w05_pc 88.51（−0.55，加部位一致性反而更差）、
+       cam_head_w05_c04 88.82（−0.24，一致性 0.4≈0.3 的平台）。
+       → 「CAM 一致性有效是因为 CAM 框来自当前模型（自洽、会移动），GT 固定标注没有这个性质」。
+       剩余两格（gth_pad08_wing、gth_pad08_attn）9 点后出。
