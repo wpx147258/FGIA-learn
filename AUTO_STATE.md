@@ -127,3 +127,11 @@
        tl_ent3_aux（ep49 val 86.20）与 tl_ent3_aux_res（ep49 val 87.41）训练已结束但尚未评测，
        等有整卡空出再跑 test_tta（EVAL.batch_size=64 在 448 下要 ~5GB，不能与训练抢）。
        本地 attnp_cls_d2 在 ep11。
+[10:10] 核查「不学残差版」：
+       · TL 的「不学残差」= 替换出口：新排的 5 个熵上限格里 4 格是 replace，已覆盖；
+       · PartAttention 的「去残差 + logit 融合」= r50_pa4_logit（88.87），其 seed 复现
+         r50_pa4_logit_s1 已在 D 轮排队；
+       · 但发现 r50_pa4_res（有界残差 pa_res_scale=0.3）**10/28 那次是崩的**
+         （IndexError: Dimension out of range，只有 config.yaml/log.txt，没有权重），
+         当时是修 res_scale 之前的代码。现已验证修复后可跑，并补进 D 轮。
+       远程补齐脚本现共 20 个 run，语法检查通过。
