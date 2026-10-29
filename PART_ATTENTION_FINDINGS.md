@@ -471,3 +471,18 @@ mean 读出的描述子更差。
 `all_sig` vs `all_sig_blur` 差 0.00，`all_pa4` vs `all_pa4_blur`、`all_pa4k8` vs
 `all_pa4k8_blur` 各差 0.16 —— 这三对在有效配置上是同一条式子。所以
 **同配置跑动噪声 ∈ [0.00, 0.16]**，之前的「±0.2」是经验估计，现在有了实测支撑。
+
+## 十九、开关活性审计（2026-10-30 03:00）
+
+前面已经抓到 4 个「配置项没接到计算图」的 bug，所以做了一次机械审计：**逐项翻转一个开关，
+看前向的 logits 是否真的变**。注意出口是零初始化的（`PartAttention.out` / `AttnPool.out`
+都 `zeros_`），初始化直接测什么都测不出来——必须先把出口权重打散再测。
+
+| 模块 | 结果 |
+|---|---|
+| PartAttention | compete / norm_spatial / mask_blur / readout / tau / std_correction / random_masks / no_residual / res_scale **全部生效**；`pa_detach` 在 eval 下 Δ=0 属正常（它只影响梯度，不改前向值） |
+| AttnPool | readout / depth(0,2) / pos / tokens=49 / dim=512 / heads=8 / from=layer3 **全部生效**；replace / cat_gap 生效 |
+| 损失权重 | `pa_div_w` / `pa_aux_w` / `main_w` 生效；`cam_crop`/`cam_consistency`/`label_smoothing` 在合成 batch 上不触发（需要 cam 分支的额外输入 / base 本身就是 0），**不构成结论** |
+
+结论：目前没有新的死开关。`mask_blur` 那次是「接到了构造函数、但主前向绕过了它」，
+单纯 grep 引用次数查不出来，必须靠这种活性测试。
