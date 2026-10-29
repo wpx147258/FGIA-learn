@@ -236,3 +236,21 @@
        long75 曾在其口径上给出 +0.2，两个增量正交；这是唯一不依赖「部件机制」假设的路径。
        远程 chain_long 的同配置是 SEED=42，两粒合起来就能看这个组合是否稳定过 90。
        本地同时还有 attnpcls_s1（ep37）在跑，卡内并行两格（9.5GB/24GB 起）。
+[01:20] `r50_all_attnpcls_s1`（SEED=1，全训）出分：**89.52**（f0.5）/ 89.47 / 89.32。
+       与 SEED=42 的 89.85 合起来均值 89.685，正落在全训基线 4 粒均值 89.80 之下。
+       **那 +0.24 没有复现**，AttnPool-CLS 目前只是「在噪声里」。
+[01:35] chain_sig 出分（全训，f0.5）：sig_js 89.23、pa4js 89.13、sig_blur 89.02。
+[01:45] 补评三格（此前 OOM/加载失败）——**PA 的最好结果其实是这两格**：
+       `all_pa4k8`（K=8/compete/无JS）= **89.75**，`all_pa4`（K=4/compete/无JS）= 89.58。
+       据此重排对照：K=4 上 compete +0.56（89.58 vs 89.02）、JS −0.45（89.13 vs 89.58）。
+       即"compete 太强"的假设在被 JS 混淆之前不成立；真正有效的是 **K 更大 + 去掉 JS**。
+[01:50] **发现实现 bug**：`pa_mask_blur` 只写在 `part_masks()`（mul 路径与探针），
+       `forward()` 内联重算掩码时没有平滑 ⇒ 四个 `*_blur` 格子训练时等于没开。
+       证据：`all_sig` 与 `all_sig_blur` 五个权重 test 逐位相同（84.73/89.07/89.02/89.01/88.95），
+       config 只差 `pa_mask_blur`。因此 docs 里"平滑修好形态但不涨点"的结论**作废**。
+       修复提交 9cf2531；平滑的真正复测放进 chain_gap G3（`all_pa4js_blur_v2`）。
+[01:55] 同提交里加 `load_state_dict_tolerant`：老 ckpt 无条件带 `part_attn.mul_gate`/`mul_pw`，
+       strict 加载报错，正是 `all_pa4k8`/`all_pa4` 五次评测全部失败的原因。
+[02:05] 据新数据重排 chain_pa（原来是 parand/sigk8/sigk8_blur/pa4js_l3），改成围绕最好配置：
+       `parand8`（随机掩码对照，决定性）、`pa4k16`（K 的趋势）、`pa4k8_s7`（89.75 的第二粒）、
+       `pa4k8_l3`（layer3）。本地槽位改为 `r50_all_base_s1`（同代码的第二粒全训基线）。
