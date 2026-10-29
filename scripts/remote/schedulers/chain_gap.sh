@@ -31,12 +31,12 @@ launch 1 r50_all_attnp_d0  $AT MODEL.attn_depth=0
 launch 2 r50_all_pa4k8_cls $PA MODEL.pa_parts=8 MODEL.pa_readout=cls
 # τ 扫描（tau005/tau02）按 2026-10-30 的诊断撤掉：掩码本来就是近 one-hot，
 # τ 动不了它；换成诊断直接指向的「熵上限」两格（部件越训越平是实测到的失效模式）。
-launch 3 r50_all_pa4k8_ent1 $PA8 MODEL.pa_ent_w=1.0 MODEL.pa_ent_target=3.5
+launch 3 r50_all_pa4k8_ent1 $PA8 MODEL.pa_ent_w=1.0 MODEL.pa_ent_target=3.5 MODEL.pa_ent_ramp=0.3
 waitnames "EXP_NAME=(r50_all_t49|r50_all_attnp_d0|r50_all_pa4k8_cls|r50_all_pa4k8_ent1)$"
 evalbatch r50_all_t49 r50_all_attnp_d0 r50_all_pa4k8_cls r50_all_pa4k8_ent1
 
 echo "=== G2 ===" >> "$LOG"
-launch 0 r50_all_pa4k8_ent3 $PA8 MODEL.pa_ent_w=3.0 MODEL.pa_ent_target=2.5
+launch 0 r50_all_pa4k8_ent3 $PA8 MODEL.pa_ent_w=3.0 MODEL.pa_ent_target=2.5 MODEL.pa_ent_ramp=0.3
 launch 1 r50_all_aux1      $PA TRAIN.pa_aux_w=1.0
 launch 2 r50_all_pos       $AT MODEL.attn_pos=true
 launch 3 r50_all_dim512    $AT MODEL.attn_dim=512

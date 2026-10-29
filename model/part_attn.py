@@ -50,7 +50,7 @@ class PartAttention(nn.Module):
                  mul: bool = False, mul_center: bool = True, mul_gate: float = -10.0,
                  mask_blur: bool = False, readout: str = "mean",
                  std_correction: int = 0, random_masks: bool = False,
-                 ent_target: float = 0.0, ent_w: float = 0.0):
+                 ent_target: float = 0.0, ent_w: float = 0.0, ent_ramp: float = 0.0):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -183,10 +183,18 @@ class PartAttention(nn.Module):
         # 只罚「太平」（hinge），不平的不动；目标值用 nats，3.5 ≈ 集中在 33/196 个位置。
         self.ent_target = float(ent_target)
         self.ent_w = float(ent_w)
+        # 上限退火：前 ent_ramp（占训练进度的比例）内，上限从 ln(N) 线性降到 ent_target。
+        self.ent_ramp = float(ent_ramp)
+        self.progress = 0.0
         self._last_ent_hinge: torch.Tensor | None = None
+        self._last_ent_target = float(ent_target)
         # 给分类头用的部件描述子（[B,K,C]）和可微的散度项，训练时由 Classifier 取走
         self._last_z: torch.Tensor | None = None
         self._last_div: torch.Tensor | None = None
+
+    def set_progress(self, p: float):
+        """训练进度 0..1，用于熵上限退火（ent_ramp）。trainer 会遍历 modules 自动调用。"""
+        self.progress = float(min(max(p, 0.0), 1.0))
 
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
         if self.detach_feat:
@@ -284,7 +292,19 @@ class PartAttention(nn.Module):
         # 与 _last_div 分开累加，这样日志里能看出到底是散度项在动还是熵项在动。
         if self.ent_w > 0:
             ent_a = -(a * a.clamp_min(1e-9).log()).sum(-1)          # [B,K]
-            self._last_ent_hinge = (self.ent_w * (self.ent_target - ent_a).clamp_min(0.0)).mean()
+            # ⚠️ 符号必须是 (ent − target)：训练把熵往**高**推（实测 3.45→4.86），
+            # 所以要罚的是「比目标更平」。写成 (target − ent) 会在熵 > target 时恒为 0、
+            # 梯度也为 0，整个正则静默失效——第一版就写反了，冒烟测试抓到。
+            tgt = self.ent_target
+            if self.ent_ramp > 0:
+                # 退火：上限从 ln(N)（=完全不罚）线性降到 target，避免一上来就给大罚项。
+                # 依据 docs/PLAN_R50_90.md 结论 3：硬上限从第 0 步生效会造成冷启动崩落。
+                import math
+                ln_n = math.log(a.shape[-1])
+                frac = min(self.progress / self.ent_ramp, 1.0)
+                tgt = ln_n + (self.ent_target - ln_n) * frac
+            self._last_ent_target = float(tgt)
+            self._last_ent_hinge = (self.ent_w * (ent_a - tgt).clamp_min(0.0)).mean()
         else:
             self._last_ent_hinge = None
 
@@ -436,6 +456,7 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         random_masks=bool(mcfg.get("pa_random_masks", False)),
         ent_target=float(mcfg.get("pa_ent_target", 0.0)),
         ent_w=float(mcfg.get("pa_ent_w", 0.0)),
+        ent_ramp=float(mcfg.get("pa_ent_ramp", 0.0)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),
