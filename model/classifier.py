@@ -189,6 +189,8 @@ class Classifier(nn.Module):
         # 软空间注意力池化（TokenLearner）：输出与 GAP 同维相加，零初始化
         self.tokenlearner = tokenlearner
         self.tl_replace = bool(getattr(tokenlearner, "replace", False))
+        # 与 GAP 拼接：pooled = [GAP ; TokenLearner 输出]，头输入 2C
+        self.tl_cat_gap = bool(getattr(tokenlearner, "cat_gap", False))
 
     def _capture_parts(self):
         """取走部件注意力模块在**本次主干前向**里算出的部件描述子与散度项。
@@ -540,8 +542,14 @@ class Classifier(nn.Module):
             f0 = self.backbone.forward_features(x)
             feat = self._to_feature_map(f0)
             if self.tl_replace:
-                return self.head(self.tokenlearner(feat))
-            return self.head(self.backbone.forward_head(f0) + self.tokenlearner(feat))
+                tl_out = self.tokenlearner(feat)
+                if self.tl_cat_gap:
+                    return self.head(torch.cat([self.backbone.forward_head(f0), tl_out], dim=1))
+                return self.head(tl_out)
+            tl_out = self.tokenlearner(feat)
+            if self.tl_cat_gap:
+                return self.head(torch.cat([self.backbone.forward_head(f0), tl_out], dim=1))
+            return self.head(self.backbone.forward_head(f0) + tl_out)
         if self.attn_pool is not None and not self.training:
             return self._forward_with_attn(x)
         if self.pmg is not None and not self.training:
@@ -589,8 +597,14 @@ class Classifier(nn.Module):
                 f0 = self.backbone.forward_features(x)
                 feat = self._to_feature_map(f0)
                 if self.tl_replace:
-                    return self.head(self.tokenlearner(feat))
-                return self.head(self.backbone.forward_head(f0) + self.tokenlearner(feat))
+                    tl_out = self.tokenlearner(feat)
+                    if self.tl_cat_gap:
+                        return self.head(torch.cat([self.backbone.forward_head(f0), tl_out], dim=1))
+                    return self.head(tl_out)
+                tl_out = self.tokenlearner(feat)
+                if self.tl_cat_gap:
+                    return self.head(torch.cat([self.backbone.forward_head(f0), tl_out], dim=1))
+                return self.head(self.backbone.forward_head(f0) + tl_out)
             if self.pa_logit_fuse:
                 f0 = self.backbone.forward_features(x)
                 lg = self.head(self.backbone.forward_head(f0))
@@ -636,7 +650,11 @@ class Classifier(nn.Module):
             else:
                 pooled = pooled + self.attn_pool(src)
         if self.tokenlearner is not None:
-            pooled = self.tokenlearner(feat) if self.tl_replace else pooled + self.tokenlearner(feat)
+            tl_out = self.tokenlearner(feat)
+            if self.tl_cat_gap:
+                pooled = torch.cat([pooled, tl_out], dim=1)
+            else:
+                pooled = tl_out if self.tl_replace else pooled + tl_out
             if self.tokenlearner._reg is not None:
                 out_reg = self.tokenlearner._reg
         mge_logits = self.mge() if self.mge is not None else None
@@ -771,7 +789,9 @@ def build_model(cfg: dict) -> Classifier:
     if head_name not in HEADS:
         raise KeyError(f"未知的 head: {head_name!r}，可选 {sorted(HEADS)}")
     # 与 GAP 拼接的出口会让分类头看到 2C 维（全局统计 + 注意力池化表示）
-    head_in = feat_dim * 2 if (mcfg.get("attn_cat_gap", False) and mcfg.get("attn_pool", False)) else feat_dim
+    _cat_gap = ((mcfg.get("attn_cat_gap", False) and mcfg.get("attn_pool", False))
+                or (mcfg.get("tl_cat_gap", False) and mcfg.get("tokenlearner", False)))
+    head_in = feat_dim * 2 if _cat_gap else feat_dim
     head_kwargs = dict(
         in_features=head_in,
         out_features=cfg["DATASET"]["num_classes"],
@@ -855,7 +875,8 @@ def build_model(cfg: dict) -> Classifier:
             attn_depth=int(mcfg.get("tl_attn_depth", 0)),
             attn_heads=int(mcfg.get("tl_attn_heads", 4)),
             readout=str(mcfg.get("tl_readout", "mean")),
-            replace=bool(mcfg.get("tl_replace", False)))
+            replace=bool(mcfg.get("tl_replace", False)),
+            cat_gap=bool(mcfg.get("tl_cat_gap", False)))
 
     attn_pool = None
     if mcfg.get("attn_pool", False):

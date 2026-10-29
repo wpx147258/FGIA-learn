@@ -72,6 +72,8 @@ MODEL:
   # 上限的退火比例（占总轮数）：前这么多轮里上限从 lnN 线性降到 tl_ent_ceiling。
   # 0 = 不退火（立刻生效）。替换出口上用紧上限时建议 0.1~0.2，避免冷启动。
   tl_ent_ramp: 0.0
+  # 与 GAP 拼接的出口：pooled = [GAP ; TokenLearner 输出]，头输入 2C（与 tl_replace 互斥）
+  tl_cat_gap: false
   tl_js_w: 0.0
   tl_js_target: 0.35
   # JS 的聚合方式：mean = hinge(图对平均 JS)（旧行为，可被少数差异大的图对顶上去）；

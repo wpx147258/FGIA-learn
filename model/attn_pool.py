@@ -221,7 +221,8 @@ class TokenLearner(nn.Module):
                  ent_mode: str = "target", ent_floor: float = 0.5,
                  ent_ceiling: float = 0.0, ent_ramp: float = 0.0,
                  attn_depth: int = 0, attn_heads: int = 4,
-                 readout: str = "mean", replace: bool = False):
+                 readout: str = "mean", replace: bool = False,
+                 cat_gap: bool = False):
         super().__init__()
         self.s = int(s_tokens)
         self.dim = int(dim)
@@ -232,6 +233,11 @@ class TokenLearner(nn.Module):
         )
         self.norm = nn.LayerNorm(dim)
         self.replace = bool(replace)
+        # 与 GAP 拼接的出口：pooled = [GAP ; TokenLearner 输出]，由 Classifier 负责拼接，
+        # 这里只记录意图（保证 replace 分支产出 C 维向量）。
+        self.cat_gap = bool(cat_gap)
+        if self.cat_gap and self.replace:
+            raise ValueError("tl_cat_gap 与 tl_replace 不能同时开（一个要拼接、一个要替换）")
         if readout not in ("mean", "cls", "concat", "gate"):
             raise ValueError(f"readout 只能是 mean | cls | concat | gate，收到 {readout!r}")
         self.cat = None
