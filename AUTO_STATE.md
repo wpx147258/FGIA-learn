@@ -105,3 +105,12 @@
        - 远程 GPU0/2：两个 TL「压紧+锚」格继续（ent3 + aux，替换/残差）。
        注意：pa_div_w / pa_aux_w / pa_lr 在 TRAIN 下，pa_from/pa_parts/pa_tau 在 MODEL 下，
        写错会直接 KeyError（今天踩了一次）。
+[09:45] 核对「原计划是否都恢复了」：把 scripts/queue_r50_90*.sh 里所有 run 名与 outputs 对照，
+       发现原计划有 11 项从未执行（不只是 gc/clip 四格）：
+         · 第一轮（已挂等待）：r50_gc、r50_gc_ctrl、r50_clip_gap、r50_clip_ap（+ s8_gc 视 gc 结果）
+         · 控制臂/消融：r50_pa、r50_pa_ctrl、r50_pa2_ctrl、r50_pa3_ctrl
+         · 多区域：r50_camfuse3（三路）、r50_hypfuse2、r50_rerank2、r50_rerank4
+         · 变体：r50_pa4_lr1、r50_pa4_logit_s1、r50_partaux
+       已写成三轮脚本 /root/restore_plan.sh，并由 /root/chain_restore.sh 挂到第一轮之后自动执行。
+       注意 r50_rerank2_ctrl 在原队列里与 rerank2 配置完全相同（疑似复制粘贴错误），未纳入。
+       强监督项（gth_w_s3）按用户要求继续暂停，不补。
