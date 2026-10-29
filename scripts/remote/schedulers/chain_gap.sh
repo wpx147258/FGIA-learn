@@ -64,4 +64,17 @@ launch 3 r50_all_pa4js_blur_v2 $PA MODEL.pa_js_w=0.5 MODEL.pa_js_target=0.35 MOD
 waitnames "EXP_NAME=(r50_all_heads8|r50_all_div03|r50_all_div30|r50_all_pa4js_blur_v2)$"
 evalbatch r50_all_heads8 r50_all_div03 r50_all_div30 r50_all_pa4js_blur_v2
 cleanup r50_all_heads8 r50_all_div03 r50_all_div30 r50_all_pa4js_blur_v2
+
+# ⚠️ --set 是 nargs="*"，**第二次出现会覆盖掉前面的全部覆盖项**，
+# 所以下面每一行都只追加 KEY=VALUE，绝不能再写第二个 --set。
+echo "=== G4：出口与冗余（2026-10-30 05:00 依据诊断追加）===" >> "$LOG"
+# 依据：所有"改进掩码"的路都走完了（K、熵、平滑、layer3），全部中性。
+# 剩下的两个未验证方向：(a) 部件证据能不能进类间决策；(b) 部件注意力是不是和 CAM 冗余。
+launch 0 r50_all_nocam       TRAIN.cam_crop=0.0 TRAIN.cam_consistency=0.0
+launch 1 r50_all_pa4k8_nocam $PA8 TRAIN.cam_crop=0.0 TRAIN.cam_consistency=0.0
+launch 2 r50_all_pa4k8_mul   $PA8 MODEL.pa_mul=true MODEL.pa_mul_gate=-2.0
+launch 3 r50_all_pa4k8_aux1  $PA8 TRAIN.pa_aux_w=1.0
+waitnames "EXP_NAME=(r50_all_nocam|r50_all_pa4k8_nocam|r50_all_pa4k8_mul|r50_all_pa4k8_aux1)$"
+evalbatch r50_all_nocam r50_all_pa4k8_nocam r50_all_pa4k8_mul r50_all_pa4k8_aux1
+cleanup    r50_all_nocam r50_all_pa4k8_nocam r50_all_pa4k8_mul r50_all_pa4k8_aux1
 echo "[$(date '+%F %T')] CHAIN_GAP_DONE" >> "$LOG"
