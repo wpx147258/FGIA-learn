@@ -254,3 +254,21 @@
 [02:05] 据新数据重排 chain_pa（原来是 parand/sigk8/sigk8_blur/pa4js_l3），改成围绕最好配置：
        `parand8`（随机掩码对照，决定性）、`pa4k16`（K 的趋势）、`pa4k8_s7`（89.75 的第二粒）、
        `pa4k8_l3`（layer3）。本地槽位改为 `r50_all_base_s1`（同代码的第二粒全训基线）。
+[02:00] 配对检验（全训，swa_f0.5，逐张 McNemar）——**没有任何一格与基线显著不同**：
+       pa4k8 vs base: +0.16 (125/116, p=0.61)；attnpcls vs base: +0.24 (98/84, p=0.34)；
+       pa4 vs sig (compete 效应): +0.52 (141/111, p=0.068)；
+       pa4 vs pa4js (JS 效应): +0.40 (123/100, p=0.14)。
+       ⇒ "compete 好、JS 差"只能当方向，不能当结论。
+[02:02] 五个 PA run 的机制诊断（ep1→ep49）：
+       - 无 compete：K 张掩码余弦 **0.9998**，pa_div_w=1.0 完全没能分开 ⇒ compete=false 是"塌成一张"，
+         不是"允许重叠"；
+       - 有 compete：部件确实分开，但**熵 4.31→4.86（上限 5.28）、重叠 0.17→0.37**，
+         即训练在主动放弃空间选择性——加性出口下这是 loss 的最优解；
+       - JS 能维持分离（重叠停在 0.14）但掉 0.4~0.5 ⇒ 多样性本身不是缺的东西。
+[02:05] 据此新增「部件掩码熵上限」正则（MODEL.pa_ent_w / pa_ent_target，hinge，只罚太分散），
+       提交 bfd8fdf。用它替换 chain_gap 里两个盲扫的 τ 格（τ 改不动近 one-hot 的掩码）。
+[01:53] 远程 GPU3 有 35 分钟空档 → 提前起 `r50_all_parand8`（固定随机掩码对照，K=8/compete/无JS，
+       与 89.79 的 all_pa4k8 逐字段相同）。启动后已核对 config：SEED=42、train_on_val=true、
+       pa_random_masks=true、pa_parts=8、pa_js_w=0.0、pa_mask_blur=false。
+       顺带一个观察：随机固定掩码的熵是 **3.55**（恒定），而学到的掩码训到 4.86 ——
+       **学出来的掩码比随机掩码还平**。
