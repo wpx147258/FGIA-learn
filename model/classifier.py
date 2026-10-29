@@ -512,6 +512,9 @@ class Classifier(nn.Module):
                 if pa_cap is not None:
                     out["logits_pa"] = pa_cap[0]
                     out["pa_div"] = pa_cap[1]
+                _pa = getattr(self.backbone, "part_attn", None)
+                if _pa is not None and getattr(_pa, "_last_ent_hinge", None) is not None:
+                    out["pa_ent"] = _pa._last_ent_hinge
                 if self.cam_aux is not None:
                     out.update(self.cam_aux(self, x, feat_map, logits, y, batch))
                     if self.cam_fuse and "logits_crop" in out:
@@ -679,6 +682,11 @@ class Classifier(nn.Module):
             # 否则检测器只靠最终融合特征的梯度，很容易退化成"全都在看同一处"。
             out["logits_pa"] = pa_cap[0]
             out["pa_div"] = pa_cap[1]
+        # 部件掩码的熵上限项（与散度项分开，便于分辨是哪一项在起作用）。
+        # 注意不能挂在 pa_cap 上：没有逐部件分类头时也要能开熵正则。
+        _pa = getattr(self.backbone, "part_attn", None)
+        if _pa is not None and getattr(_pa, "_last_ent_hinge", None) is not None:
+            out["pa_ent"] = _pa._last_ent_hinge
         if self.tokenlearner is not None and self.tokenlearner._reg is not None:
             out["tl_reg"] = self.tokenlearner._reg
         if self.training and getattr(self.tokenlearner, "_last_z", None) is not None:

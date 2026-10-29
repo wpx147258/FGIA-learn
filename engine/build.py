@@ -283,6 +283,12 @@ class ClassificationCriterion(nn.Module):
             loss = loss + self.pa_div_w * out["pa_div"]
             logs["pa_div"] = float(out["pa_div"].detach())
 
+        # 部件掩码的熵上限（只罚太分散）。权重在 MODEL.pa_ent_w（模块内已乘过），
+        # 这里直接相加，避免同一件事有两个权重旋钮。见 model/part_attn.py 的注释。
+        if "pa_ent" in out:
+            loss = loss + out["pa_ent"]
+            logs["pa_ent"] = float(out["pa_ent"].detach())
+
         # 熵正则：减号 = 最大化熵，抑制「错得自信」
         if self.entropy_w > 0:
             lg = out["logits"].float()

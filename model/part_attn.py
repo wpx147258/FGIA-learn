@@ -49,7 +49,8 @@ class PartAttention(nn.Module):
                  js_w: float = 0.0, js_target: float = 0.35,
                  mul: bool = False, mul_center: bool = True, mul_gate: float = -10.0,
                  mask_blur: bool = False, readout: str = "mean",
-                 std_correction: int = 0, random_masks: bool = False):
+                 std_correction: int = 0, random_masks: bool = False,
+                 ent_target: float = 0.0, ent_w: float = 0.0):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -175,6 +176,14 @@ class PartAttention(nn.Module):
         self._last_entropy = 0.0
         self._last_overlap = 0.0
         self._last_ratio = 0.0
+        # 熵上限正则（2026-10-30 新增）：训练日志显示部件掩码的熵**越训越高**
+        # （pa4k8: 4.31→4.86 / 上限 ln196=5.28），部件间余弦相似度也越训越高
+        # （0.17→0.37）——即"每个部件看全图、且都在看同一处"，等价于退化成 GAP。
+        # 加性出口下模型没有空间激励，所以只能靠外部压力把掩码压紧。
+        # 只罚「太平」（hinge），不平的不动；目标值用 nats，3.5 ≈ 集中在 33/196 个位置。
+        self.ent_target = float(ent_target)
+        self.ent_w = float(ent_w)
+        self._last_ent_hinge: torch.Tensor | None = None
         # 给分类头用的部件描述子（[B,K,C]）和可微的散度项，训练时由 Classifier 取走
         self._last_z: torch.Tensor | None = None
         self._last_div: torch.Tensor | None = None
@@ -270,6 +279,14 @@ class PartAttention(nn.Module):
                 self._last_div = self._last_div + self.js_w * (self.js_target - js_off).clamp_min(0).mean()
         else:
             self._last_div = torch.zeros((), device=m.device)
+
+        # 熵上限：只罚「太分散」（hinge），目标以 nats 计（上限 = ln(N)，14×14 时 5.28）。
+        # 与 _last_div 分开累加，这样日志里能看出到底是散度项在动还是熵项在动。
+        if self.ent_w > 0:
+            ent_a = -(a * a.clamp_min(1e-9).log()).sum(-1)          # [B,K]
+            self._last_ent_hinge = (self.ent_w * (self.ent_target - ent_a).clamp_min(0.0)).mean()
+        else:
+            self._last_ent_hinge = None
 
         if self.part_cls is not None:
             self._last_part_logits = self.part_cls(z)
@@ -417,6 +434,8 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         readout=str(mcfg.get("pa_readout", "mean")),
         std_correction=int(mcfg.get("pa_std_correction", 0)),
         random_masks=bool(mcfg.get("pa_random_masks", False)),
+        ent_target=float(mcfg.get("pa_ent_target", 0.0)),
+        ent_w=float(mcfg.get("pa_ent_w", 0.0)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),
