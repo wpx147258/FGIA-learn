@@ -437,7 +437,12 @@ def train_one_epoch(model, train_loader, optimizer, criterion, device, epoch, *,
     out.update({k: m.avg for k, m in log_meters.items()})
     ap = getattr(model, "attn_pool", None)
     if ap is not None:
-        out["attn_out_w"] = float(ap.out.weight.detach().norm())
+        # 替换出口用 back 而不是 out；两者取其一，都没有则跳过（原本这里 KeyError）
+        _proj = getattr(ap, "out", None)
+        if _proj is None:
+            _proj = getattr(ap, "back", None)
+        if _proj is not None:
+            out["attn_out_w"] = float(_proj.weight.detach().norm())
         if getattr(ap, "_last_out_norm", None) is not None:
             out["attn_out_norm"] = float(ap._last_out_norm)
         if getattr(ap, "_last_ratio", None) is not None:
