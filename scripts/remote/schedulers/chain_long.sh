@@ -15,7 +15,7 @@ for _ in $(seq 1 500); do
   sleep 60
 done
 # 插队格：CAM 强度两格在 chain_pa 的评测窗口里已经占着 GPU1/GPU3，等它们跑完再占满四卡
-while pgrep -f "EXP_NAME=(r50_all_cam035|r50_all_cons06)$" >/dev/null 2>&1; do sleep 30; done
+while pgrep -f "EXP_NAME=(r50_all_cam035|r50_all_cons06|r50_all_r512_base|r50_all_r512_pa4k8)$" >/dev/null 2>&1; do sleep 30; done
 echo "[$(date '+%F %T')] 前置批次结束，启动长训练四格" >> "$LOG"
 BASE="--config configs/baseline_config.yaml --set DATASET.image_size=448 TRAIN.batch_size=16 TRAIN.mixup=0.2 TRAIN.cutmix=1.0 TRAIN.mixup_p=0.7 TRAIN.label_smoothing=0.05 TRAIN.cam_crop=0.2 TRAIN.cam_alpha_crop=0.2 TRAIN.cam_margin=1.3 TRAIN.cam_consistency=0.3 TRAIN.cam_consistency_T=2.0 TRAIN.backbone_lr_layers.stem=0.01 TRAIN.backbone_lr_layers.layer1=0.01 TRAIN.backbone_lr_layers.layer2=0.03 TRAIN.backbone_lr_layers.layer3=0.05 TRAIN.backbone_lr_layers.layer4=0.05 TRAIN.lr=1.0e-3 MODEL.name=resnet50.fb_swsl_ig1b_ft_in1k MODEL.dropout=0.1 DATASET.train_on_val=true"
 SWA="TRAIN.swa_start_frac=[0.6,0.7,0.8]"

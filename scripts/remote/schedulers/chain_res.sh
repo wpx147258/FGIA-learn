@@ -43,8 +43,7 @@ evalbatch () { for n in "$@"; do d=$(ls -dt outputs/$n/*/ 2>/dev/null|head -1)
 R512="DATASET.image_size=512 EVAL.batch_size=32"
 
 echo "=== R1：分辨率 512 两格 ===" >> "$LOG"
-launch 0 r50_all_r512_base  $R512
-launch 1 r50_all_r512_pa4k8 $R512 $PA8
+# 分辨率两格已在 03:55 的窗口里提前跑完（见 /root/launch_r512.sh），这里只评测
 # CAM 强度两格（cam035 / cons06）已在 03:22 的评测窗口里提前跑完，这里只跑分辨率两格
 waitnames "EXP_NAME=(r50_all_r512_base|r50_all_r512_pa4k8)$"
 evalbatch r50_all_cam035 r50_all_cons06 r50_all_r512_base r50_all_r512_pa4k8
