@@ -37,7 +37,8 @@ class AttnPool(nn.Module):
     def __init__(self, in_channels: int = 2048, out_dim: int = 2048, dim: int = 768,
                  tokens: int = 196, depth: int = 1, heads: int = 8,
                  mlp_ratio: float = 2.0, dropout: float = 0.0, use_pos: bool = False,
-                 readout: str = "mean", replace: bool = False):
+                 readout: str = "mean", replace: bool = False,
+                 cat_gap: bool = False):
         super().__init__()
         self.tokens = int(tokens)
         self.use_pos = bool(use_pos)
@@ -84,6 +85,11 @@ class AttnPool(nn.Module):
         #            此时 back(v)≈GAP，所以初始仍等于 GAP）。用来检验「额外残差通路
         #            本身」是否有害。
         self.replace = bool(replace)
+        # 与 GAP 拼接的出口：pooled = [GAP ; module_out]，头输入 2C。
+        # 与 replace 互斥（一个要替换、一个要并存）。
+        self.cat_gap = bool(cat_gap)
+        if self.cat_gap and self.replace:
+            raise ValueError("attn_cat_gap 与 attn_replace 互斥")
         if self.replace:
             # 替换 GAP 的出口：pooled = a·back(v) + (1−a)·GAP，a = sigmoid(alpha)。
             # ⚠️ 已知代价：proj 是 C→dim 的降维（dim < C），back 把 dim 还原成 C 只是

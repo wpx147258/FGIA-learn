@@ -178,6 +178,8 @@ class Classifier(nn.Module):
         self.deep_sup = deep_sup
         # 部位间自注意力：输出与 GAP 同维并相加（零初始化，初始等价于基线）
         self.attn_pool = attn_pool
+        # 与 GAP 的融合方式：add（默认，残差）/ replace（替换）/ cat（拼接，头输入 2C）
+        self.attn_cat_gap = bool(getattr(attn_pool, "cat_gap", False))
         # replace=True 时模块直接产出「替换 GAP」的池化特征，而不是残差
         self.attn_replace = bool(getattr(attn_pool, "replace", False))
         # 自注意力可以接 layer4 也可以接 layer3（28x28，784 token）
@@ -439,6 +441,8 @@ class Classifier(nn.Module):
         pooled = f0 if getattr(self.head, "on_feature_map", False) else self.backbone.forward_head(f0)
         if self.attn_replace:
             return self.head(self.attn_pool(src))
+        if self.attn_cat_gap:
+            return self.head(torch.cat([pooled, self.attn_pool(src)], dim=1))
         return self.head(pooled + self.attn_pool(src))
 
     def _forward_with_gate(self, x: torch.Tensor) -> torch.Tensor:
@@ -623,7 +627,14 @@ class Classifier(nn.Module):
                 self.head, "on_feature_map", False) else feat
         if self.attn_pool is not None:
             src = getattr(self, "_ap_feat", None) if self.attn_from == "layer3" else feat
-            pooled = self.attn_pool(src) if self.attn_replace else pooled + self.attn_pool(src)
+            if self.attn_replace:
+                pooled = self.attn_pool(src)
+            elif self.attn_cat_gap:
+                # 与 GAP 拼接：分类头同时看到「全局统计」与「注意力池化表示」，
+                # 不必二选一。代价是头输入维度翻倍（410K → 820K 参数）。
+                pooled = torch.cat([pooled, self.attn_pool(src)], dim=1)
+            else:
+                pooled = pooled + self.attn_pool(src)
         if self.tokenlearner is not None:
             pooled = self.tokenlearner(feat) if self.tl_replace else pooled + self.tokenlearner(feat)
             if self.tokenlearner._reg is not None:
@@ -759,8 +770,10 @@ def build_model(cfg: dict) -> Classifier:
     head_name = mcfg.get("head", "linear")
     if head_name not in HEADS:
         raise KeyError(f"未知的 head: {head_name!r}，可选 {sorted(HEADS)}")
+    # 与 GAP 拼接的出口会让分类头看到 2C 维（全局统计 + 注意力池化表示）
+    head_in = feat_dim * 2 if (mcfg.get("attn_cat_gap", False) and mcfg.get("attn_pool", False)) else feat_dim
     head_kwargs = dict(
-        in_features=feat_dim,
+        in_features=head_in,
         out_features=cfg["DATASET"]["num_classes"],
         # 注意作用面很小：这个头只有 feat_dim × num_classes 个参数（ResNet50 上是 410K，
         # backbone 是 23.5M）。想正则 backbone 得用 MODEL.kwargs.drop_path_rate。
@@ -867,6 +880,7 @@ def build_model(cfg: dict) -> Classifier:
             use_pos=bool(mcfg.get("attn_pos", False)),
             readout=str(mcfg.get("attn_readout", "mean")),
             replace=bool(mcfg.get("attn_replace", False)),
+            cat_gap=bool(mcfg.get("attn_cat_gap", False)),
             # .get(k, default) 在 k 存在但值为 null 时返回 None，不能直接 float()
             dropout=float(mcfg.get("attn_dropout") if mcfg.get("attn_dropout") is not None
                           else mcfg.get("dropout", 0.0)))

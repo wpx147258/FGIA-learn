@@ -220,6 +220,8 @@ MODEL:
   attn_dropout: null
   # 同上：replace=true 时用注意力池化替换 GAP，而不是加残差
   attn_replace: false
+  # 与 GAP 拼接的出口：pooled = [GAP ; 注意力池化结果]，头输入 2C（与 attn_replace 互斥）
+  attn_cat_gap: false
   # 分类头的 dropout（只正则 410K 参数的线性头）
   dropout: 0.0
   # 线性头 FC 前加一层 BatchNorm1d。不同预训练权重的特征幅度差很多

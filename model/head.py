@@ -30,8 +30,14 @@ class LinearHead(nn.Module):
         return self.fc(self.dropout(self.norm(x)))
 
     def cam_weight(self, feat_dim: int) -> torch.Tensor:
-        """CAM 用的分类权重 [num_classes, C]，和 backbone 特征图的通道维对齐。"""
-        return self.fc.weight
+        """CAM 用的分类权重 [num_classes, C]，和 backbone 特征图的通道维对齐。
+
+        当头的输入维度大于特征图通道数时（例如与 GAP 拼接的 AttnPool 出口，头吃 2C），
+        只取**前 C 列**——那一段对应全局平均池化，与特征图逐通道对齐；
+        后 C 列对应注意力池化表示，没有空间位置，不能用来算 CAM。
+        """
+        w = self.fc.weight
+        return w if w.shape[1] == feat_dim else w[:, :feat_dim]
 
 
 
