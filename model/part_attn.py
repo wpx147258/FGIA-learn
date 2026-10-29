@@ -210,6 +210,12 @@ class PartAttention(nn.Module):
             m = A / A.sum(-1, keepdim=True).clamp_min(1e-6)
         else:
             m = torch.sigmoid(raw)                       # 旧路径：每个部件独立 [0,1] 掩码
+        if self.mask_blur:
+            # ⚠️ 2026-10-30 修复：这条分支以前只写在 part_masks() 里（只有 mul 路径和探针会调用），
+            # 主前向在这里内联重算掩码，于是 pa_mask_blur=true 对训练**完全无效**——
+            # 实测 all_sig 与 all_sig_blur 五个权重 test 逐位相同、只差 EXP_NAME。
+            m = F.avg_pool2d(m.view(b, self.num_parts, h, w),
+                             kernel_size=3, stride=1, padding=1).view(b, self.num_parts, h * w)
         a = m / m.sum(dim=-1, keepdim=True).clamp_min(1e-6)   # 归一化后用于池化
         if self.grouped:
             # 每个部件只用自己那组通道做加权池化（MA-CNN Eq.5 的通道分组版本）

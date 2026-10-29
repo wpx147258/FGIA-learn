@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dataset.cub import CUBDataset
 from dataset.transforms import build_transform, resolve_data_config
 from engine.trainer import read_checkpoint, resolve_amp
-from model.classifier import build_model
+from model.classifier import build_model, load_state_dict_tolerant
 from utils.config import resolve_path
 
 
@@ -121,7 +121,7 @@ def main():
         amp_dtype = resolve_amp(cfg)
 
         model = build_model(cfg).to(device)
-        model.load_state_dict(ckpt["model"])
+        load_state_dict_tolerant(model, ckpt["model"])
         model.eval()
 
         # 同一个 checkpoint 的多视图融合

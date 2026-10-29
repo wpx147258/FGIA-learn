@@ -14,7 +14,7 @@ import torch
 from dataset import build_dataloaders
 from engine.build import build_criterion
 from engine.trainer import evaluate, read_checkpoint, resolve_amp
-from model.classifier import build_model
+from model.classifier import build_model, load_state_dict_tolerant
 from utils.config import resolve_path
 
 
@@ -50,7 +50,7 @@ def main() -> None:
     cfg = ckpt["config"]
 
     model = build_model(cfg).to(device)
-    model.load_state_dict(ckpt["model"])
+    load_state_dict_tolerant(model, ckpt["model"])
     model.eval()
 
     print(f"checkpoint : {args.checkpoint}")

@@ -750,6 +750,30 @@ class Classifier(nn.Module):
         return out
 
 
+def load_state_dict_tolerant(model: nn.Module, sd: dict) -> list[str]:
+    """加载 checkpoint，容忍 part_attn 的两个可选参数。
+
+    历史 checkpoint 里 `part_attn.mul_gate` / `mul_pw` 是**无条件创建**的（`mul=False` 时也存在），
+    后来改成只有开 `mul` 才创建，于是老权重会多出这两个键，strict 加载直接报
+    `Unexpected key(s)`——实测 `r50_all_pa4k8` / `r50_all_pa4` 就是因为这个评不出来。
+    这两个参数在不做乘性残差时**完全不参与前向**，丢掉是安全的；
+    其余任何缺失/多余键仍然报错，不放宽到"随便加载"。
+
+    返回被丢弃的键名列表。
+    """
+    OPTIONAL = {"mul_gate", "mul_pw"}
+    own = model.state_dict()
+    extra = [k for k in sd if k not in own and k.rsplit(".", 1)[-1] in OPTIONAL]
+    if extra:
+        sd = {k: v for k, v in sd.items() if k not in extra}
+    missing, unexpected = model.load_state_dict(sd, strict=False)
+    bad_missing = [k for k in missing if k.rsplit(".", 1)[-1] not in OPTIONAL]
+    bad_unexpected = [k for k in unexpected if k not in extra]
+    if bad_missing or bad_unexpected:
+        raise RuntimeError(f"checkpoint 与模型结构不符：缺 {bad_missing[:5]}，多 {bad_unexpected[:5]}")
+    return extra
+
+
 def build_model(cfg: dict) -> Classifier:
     """按 config 建模型。
 
