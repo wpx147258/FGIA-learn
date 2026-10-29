@@ -75,8 +75,8 @@ def main() -> None:
     cfg = load_config([BASE_CONFIG], ["DATASET.image_size=448"])
     root = resolve_path(cfg["DATASET"]["root"])
 
-    print(f"{'backbone':<36}{'val top-1':>12}{'特征维度':>12}")
-    print("-" * 62)
+    print(f"{'backbone':<36}{'val top-1':>12}{'特征维度':>12}{'特征rms':>12}")
+    print("-" * 74)
     for name in args.names:
         bb = build_backbone(name, pretrained=True).to(device).eval()
         # 探针必须用**评估** transform：随机增强会把噪声混进特征，压低压倒性差异
@@ -84,7 +84,10 @@ def main() -> None:
         tr_x, tr_y = extract(bb, make_loader(root, "train", tf), device)
         va_x, va_y = extract(bb, make_loader(root, "val", tf), device)
         acc = linear_probe(tr_x, tr_y, va_x, va_y, device)
-        print(f"{name:<36}{acc:11.2f}%{tr_x.shape[1]:12d}", flush=True)
+        # 特征尺度：迁移学习里它直接决定骨干学习率该给多大（a1 的 GAP rms ≈ 0.10，
+        # SWSL ≈ 0.65，相差 6 倍；同一套 lr 会把小尺度特征的骨干直接推平）。
+        rms = float(tr_x.pow(2).mean().sqrt())
+        print(f"{name:<36}{acc:11.2f}%{tr_x.shape[1]:12d}{rms:12.3f}", flush=True)
         del bb
         torch.cuda.empty_cache()
 
