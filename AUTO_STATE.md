@@ -155,3 +155,7 @@
        r50_attnp_d0_sv / r50_attnp_t49_sv 直接 CUDA OOM。
        已改成显式分批调度 /root/restore4.sh：一批 4 个 → 等这批 4 个名字全部消失 → 下一批，
        并把 OOM 掉的两格放进 BATCH 5。F 轮 4 个正常在跑（每卡一个）。
+[11:55] 发现本地 queue_l3_k4.sh **没有 run 函数**（它是单跑脚本），我在里面插的两条
+       `run r50_tl_ceil05_noramp/03` 是空转的（命令不存在，静默失败）。
+       已拆成独立脚本 queue_local_ceil.sh（带 run 函数），并挂 watcher 在 pa4_l3_k4b 结束后执行。
+       tl_cls_d2 出分 88.63（−0.43，p=0.15）；深度 1→2 在 TL 上也是没有增益。
