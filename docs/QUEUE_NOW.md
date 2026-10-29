@@ -96,3 +96,24 @@
 - **文档**：`docs/RUNNING_NOW.md`（现场）、`docs/EXPERIMENT_HISTORY.md`（历史总表）、
   `EXPERIMENT_INVENTORY.md`（滚动清单）、`AUTO_STATE.md`（时间线日志）、
   `PART_ATTENTION_FINDINGS.md`（机制结论）
+
+## 8. 缺口补齐批次（2026-10-30 00:50 已排队）
+
+`/root/chain_gap.sh`：等 `CHAIN_LONG_DONE` 之后，分三批跑完 §6 的全部缺口（全训协议）。
+
+| 批 | GPU | 实验 | 对应缺口 |
+|---|---|---|---|
+| **G1** | 0 | `all_t49` | 49 token |
+| | 1 | `all_attnp_d0` | AttnPool depth=0 控制臂 |
+| | 2 | `all_pa4k8_cls` | K=8 + CLS 读出 |
+| | 3 | `all_tau005` | τ=0.05 |
+| **G2** | 0 | `all_tau02` | τ=0.2 |
+| | 1 | `all_aux1` | 逐部件 CE 权重 1.0 |
+| | 2 | `all_pos` | `attn_pos=true`（位置编码） |
+| | 3 | `all_dim512` | `attn_dim=512` |
+| **G3** | 0 | `all_heads8` | `attn_heads=8` |
+| | 1 | `all_div03` | 散度权重 0.3 |
+| | 2 | `all_div30` | 散度权重 3.0 |
+
+每批结束自动 `eval_all_ckpts.py` 评五个权重。链路顺序：
+`chain_sig → chain_cls → chain_long → chain_gap`（全部完成约 5–6 小时）。
