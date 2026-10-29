@@ -96,3 +96,12 @@
        立即追加：远程 GPU3 头+翅+尾、GPU1 头+翅(CE 0.5)；本地排队两个 seed 重复
        （SEED=7/13，同配置），回答「+0.10 是真是假」。GPU0 保留 100 epoch 基线，
        用来判断 50 epoch 是否欠训练。
+[09:21] 按用户要求**暂停强监督**（GT 关键点特权裁剪）：远程 gth_wt / gth_w_w05 已停，
+       本地 seed 重复（gth_w_s2）已停，不再在关键点标注上投入。
+       转回 pa4（弱监督、纯图像标签）的调优：
+       - 本地 GPU：r50_pa4_l3_k4（layer3 出掩码，K=4）
+       - 远程 GPU1：r50_pa4_k8_s1（K=8 的 SEED=1，判定 89.21 真伪）
+       - 远程 GPU3：r50_pa4_l3_k8（layer3，K=8）
+       - 远程 GPU0/2：两个 TL「压紧+锚」格继续（ent3 + aux，替换/残差）。
+       注意：pa_div_w / pa_aux_w / pa_lr 在 TRAIN 下，pa_from/pa_parts/pa_tau 在 MODEL 下，
+       写错会直接 KeyError（今天踩了一次）。
