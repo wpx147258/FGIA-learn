@@ -287,6 +287,14 @@ def fit(model, loaders: dict, optimizer, scheduler, criterion, device,
         )
 
         # 调度器在 optimizer.step() 之后、按 epoch 推进
+        # 把训练进度（0..1）写给需要退火的模块（目前是 TokenLearner 的 ent_ramp）
+        try:
+            _p = (epoch + 1) / max(1, epochs)
+            for _m in model.modules():
+                if hasattr(_m, "set_progress"):
+                    _m.set_progress(_p)
+        except Exception:
+            pass
         if scheduler is not None:
             scheduler.step()
 

@@ -196,7 +196,7 @@ class TokenLearner(nn.Module):
                  ent_target: float = 0.0, div_w: float = 0.0,
                  js_w: float = 0.0, js_target: float = 0.35, js_reduce: str = "mean",
                  ent_mode: str = "target", ent_floor: float = 0.5,
-                 ent_ceiling: float = 0.0,
+                 ent_ceiling: float = 0.0, ent_ramp: float = 0.0,
                  attn_depth: int = 0, attn_heads: int = 4,
                  readout: str = "mean", replace: bool = False):
         super().__init__()
@@ -258,6 +258,12 @@ class TokenLearner(nn.Module):
         # 与 floor（只防塌缩）互为镜像。用户判断：权重应当集中（部件是局部区域），
         # 而不该摊到 ~7 格以上；同时允许图与图之间大幅重叠（JS 目标可以很低）。
         self.ent_ceiling = float(ent_ceiling)
+        # ent_ramp —— 上限的退火比例：训练前 ent_ramp（占总轮数的比例）内，
+        # 有效上限从 ln N（等于不约束）线性降到 ent_ceiling。
+        # 动机：替换出口下上限直接生效时，初始化熵 ln196≈5.28 与 0.5 的差是 22.8，
+        # 会像双侧 target 那样从第 0 步改写分类输入；退火让 CE 先把掩码塑形。
+        self.ent_ramp = float(ent_ramp)
+        self.progress = 1.0     # 由 trainer 每轮写入 0..1；1 = 退火结束
         self.div_w = float(div_w)
         # JS 正则：当每张图片的图对平均 JS 低于 js_target 时施加惩罚。
         # 分布相同 JS=0，支撑完全不重叠 JS=ln2；仅对支撑大小相同的均匀分布，
@@ -287,6 +293,10 @@ class TokenLearner(nn.Module):
             self.blocks = nn.Identity()
         self._reg = None
 
+    def set_progress(self, p: float):
+        """训练进度 0..1，用于上限退火（ent_ramp）。"""
+        self.progress = float(min(max(p, 0.0), 1.0))
+
     def forward(self, feat: torch.Tensor) -> torch.Tensor:
         x = self.proj(feat).flatten(2).transpose(1, 2)      # [B,N,dim]
         logits = self.score(x)                              # [B,N,S]
@@ -310,7 +320,13 @@ class TokenLearner(nn.Module):
         elif self.ent_mode == "ceiling" and self.ent_ceiling > 0:
             # 只压「太散」，不推「更尖」：已经比 ceiling 更集中时梯度为 0，
             # 不会像双侧 target 那样把已经很尖的图反向推回去。
-            reg = (ent - self.ent_ceiling).clamp_min(0).pow(2).mean()
+            ceil = self.ent_ceiling
+            if self.ent_ramp > 0 and self.progress < self.ent_ramp:
+                import math as _m
+                ln_n = _m.log(float(w.shape[1]))
+                frac = self.progress / self.ent_ramp          # 0 → 1
+                ceil = ln_n + (ceil - ln_n) * frac
+            reg = (ent - ceil).clamp_min(0).pow(2).mean()
         elif self.ent_target > 0:
             reg = ((ent - self.ent_target) ** 2).mean()
         if self.div_w > 0:
