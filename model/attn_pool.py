@@ -41,9 +41,19 @@ class AttnPool(nn.Module):
         super().__init__()
         self.tokens = int(tokens)
         self.use_pos = bool(use_pos)
-        if readout not in ("mean", "cls"):
-            raise ValueError(f"readout 只能是 mean | cls，收到 {readout!r}")
+        if readout not in ("mean", "cls", "gate"):
+            raise ValueError(f"readout 只能是 mean | cls | gate，收到 {readout!r}")
         self.readout = readout
+        # gate 读出：pooled = GAP + Σ_n g_n·out(t_n)，g_n = sigmoid(MLP(t_n))，
+        # 末层初始 −10 → g≈4.5e-5，且 out 零初始化，初始输出精确等于 GAP。
+        # 与 TokenLearner 的门控同一设计：模型可以「不用 token」直接退回全局平均。
+        self.gate_mlp = None
+        if readout == "gate":
+            self.gate_mlp = nn.Sequential(
+                nn.Linear(dim, max(64, dim // 8)), nn.GELU(),
+                nn.Linear(max(64, dim // 8), 1))
+            nn.init.zeros_(self.gate_mlp[-1].weight)
+            nn.init.constant_(self.gate_mlp[-1].bias, -10.0)
         # 49 = 先在特征图上做 2x2 平均池化；其余（196 / 784）= 不池化，直接用全部位置。
         # 文献调研的结论：细粒度上主流是 1x1 降维后 flatten 全部位置，
         # 没有工作用 2x2 池化到 49，所以 49 只作为最后面对照保留。
@@ -114,6 +124,11 @@ class AttnPool(nn.Module):
             gap = feat.mean(dim=(2, 3))
             a = torch.sigmoid(self.alpha)
             y = a * self.back(x_raw) + (1.0 - a) * gap
+        elif self.gate_mlp is not None:
+            tn = self.norm(t)                                  # 与 mean 读出一致，先过 LayerNorm
+            v = self.out(tn)                                  # [B,N,C]
+            g = torch.sigmoid(self.gate_mlp(tn))              # [B,N,1]
+            y = (g * v).sum(dim=1)                            # [B,C]，初始 out 全零 → y=0
         else:
             y = self.out(x)
         # 记两个量给日志：模块输出的绝对范数，以及它与 GAP 特征的相对幅度。
