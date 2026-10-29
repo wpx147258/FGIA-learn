@@ -169,6 +169,13 @@ MODEL:
   pa_grouped: false
   # 残差幅度：0=原样；>0 时把残差范数固定成 GAP 范数的这个倍数（如 0.3）
   pa_res_scale: 0.0
+  # 乘性空间残差：output = output * (1 + γ·Σ_k m_k)，γ=sigmoid(pa_mul_gate)
+  # 与加性残差的关键区别：改的是逐位置增益，GAP 之后位置权重真的变了。
+  pa_mul: false
+  # 是否先把掩码减去空间均值（使增益均值=1，初始不改变特征尺度）。默认开。
+  pa_mul_center: true
+  # γ 的 logit 初值：-10 → γ≈4.5e-5（初始恒等）；0 → γ=0.5（一开始就起作用）
+  pa_mul_gate: -10.0
   # 完全去掉残差路径（部件证据改走 logit 级融合）
   pa_no_residual: false
   # 部件分支与主干解耦（detach 特征）：逐部件 CE 不回传到 backbone

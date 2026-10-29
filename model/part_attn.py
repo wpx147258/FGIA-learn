@@ -45,7 +45,8 @@ class PartAttention(nn.Module):
                  num_classes: int = 0, grouped: bool = False,
                  res_scale: float = 0.0, no_residual: bool = False,
                  detach_feat: bool = False, perm_path: str = "", kernel: int = 1,
-                 js_w: float = 0.0, js_target: float = 0.35):
+                 js_w: float = 0.0, js_target: float = 0.35,
+                 mul: bool = False, mul_center: bool = True, mul_gate: float = -10.0):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -71,6 +72,21 @@ class PartAttention(nn.Module):
         # 等于用一条反相关的通道把主特征削掉 28%；res_scale>0 时把残差范数固定成
         # GAP 范数的 res_scale 倍（缩放系数 detach，不参与梯度）。
         self.res_scale = float(res_scale)
+        # 乘性空间残差：output = output * (1 + γ · Σ_k m_k)，γ = sigmoid(mul_gate)。
+        # 与加性残差的本质区别：这里改的是**每个位置的增益**，GAP 之后位置权重真的变了；
+        # 加性版本把 [B,C] 广播到所有位置，等价于逐通道常数偏移，表达不了空间重加权。
+        self.mul = bool(mul)
+        # mul_center：先把每张掩码减去自己的空间均值，使 Σ_k m 的均值为 0、
+        # 增益 1+Σm 的均值为 1（初始平均不改尺度）。不居中时 K 张 sigmoid 掩码
+        # 的均值约 K/2，整幅特征会被放大 (1+K/2) 倍，等于把预训练尺度打乱。
+        self.mul_center = bool(mul_center)
+        self.mul_gate = nn.Parameter(torch.tensor([float(mul_gate)]))
+        # ⚠️ 与 compete 的交互（实测发现）：compete=True 时掩码在每个位置对 K 求和恒为 1，
+        # 因此「各掩码减去空间均值后再求和」恒等于 0，乘性增益会退化成恒等（实测 std 5e-8）。
+        # 解决办法：每个部件配一个可学习权重 c_k（随机小初始化），gain = 1 + γ·Σ c_k·m̃_k。
+        self.mul_pw = None
+        if self.mul and self.compete:
+            self.mul_pw = nn.Parameter(torch.randn(self.num_parts) * 0.1)
         # JS 正则（与 TokenLearner 同一套标尺）：N=196 时 JS=0.693 表示支撑完全不重叠，
         # 0.35 表示最多重合一半，0 表示同一个分布。hinge 形式只惩罚「太像」。
         # 为什么不用内积：w 是概率分布，两张「都偏均匀」的图内积天然很小（1/N 量级），
@@ -244,6 +260,20 @@ class PartAttention(nn.Module):
         GAP 是线性的，所以"加在特征图上"等价于"加在池化后的向量上"；
         选前者是为了让 CAM 裁剪分支、y=None 早退路径、PMG、BN 重估全部自动经过它。
         """
+        if self.mul:
+            # 乘性空间残差：用掩码给每个位置一个增益，GAP 看到的是重加权后的特征图。
+            # 初始 γ≈0 → 增益恒为 1 → 与基线逐位等价。
+            m = self.part_masks(output)                          # [B,K,h,w]
+            if self.mul_center:
+                m = m - m.mean(dim=(2, 3), keepdim=True)         # 均值 0 → 增益均值 1
+            if self.mul_pw is not None:
+                # compete 模式下各掩码和为 1，必须用不同的 c_k 才能得到非退化的空间增益
+                w = (m * self.mul_pw.view(1, -1, 1, 1)).sum(dim=1, keepdim=True)
+            else:
+                w = m.sum(dim=1, keepdim=True)                   # [B,1,h,w]
+            g = torch.sigmoid(self.mul_gate)                     # 初始≈4.5e-5
+            self._last_res = (g * w).detach()
+            return output * (1.0 + g * w)
         y = self.forward(output)
         # 诊断用：bypass=True 时完全不加残差，用来量「部件分支到底改了多少」
         if getattr(self, "bypass", False):
@@ -326,6 +356,9 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         num_classes=int(num_classes),
         grouped=bool(mcfg.get("pa_grouped", False)),
         res_scale=float(mcfg.get("pa_res_scale", 0.0)),
+        mul=bool(mcfg.get("pa_mul", False)),
+        mul_center=bool(mcfg.get("pa_mul_center", True)),
+        mul_gate=float(mcfg.get("pa_mul_gate", -10.0)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),
