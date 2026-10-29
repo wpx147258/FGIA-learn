@@ -272,3 +272,19 @@
        pa_random_masks=true、pa_parts=8、pa_js_w=0.0、pa_mask_blur=false。
        顺带一个观察：随机固定掩码的熵是 **3.55**（恒定），而学到的掩码训到 4.86 ——
        **学出来的掩码比随机掩码还平**。
+[02:30] **数据盘写满（70G/70G），主因是 outputs 累计 67G checkpoint**。处理：
+       - 删掉 **40 个已完成 run 的 *.pth**（逐名列出、日志/config/metrics/dumps 全部保留），
+         释放 **59G**（回落到 11G / 60G 空闲）；
+       - 保留：`r50_all_pa4k8` / `r50_all_base` / `r50_all_attnpcls`（探针参照）+ 在跑/已排队的 run；
+       - 现存 checkpoints 共 9 个 run，另有 /root/ckpt_archive 9G 在系统盘（未动）。
+       **满盘的代价**：`r50_all_parand8` 在 ep35 存盘时崩（`unexpected pos` / `iostream error`），
+       02:29 已重启（旧的移到 CRASHED_diskfull_015327）；`r50_all_pa4js_cls` 的 **swa_f0.5.pth 没写下来**，
+       无法恢复，只有 best/last；`pa4_cls` / `sig_cls` 的 swa_f0.5 评测算过但 dump 写失败，已排在
+       parand8 结束后用 GPU2 补评（/root/eval_fix_cls.sh）。
+[02:35] **加防复发机制**：`chain_long` / `chain_gap` 的每批评测后执行 cleanup——
+       只有当**5 个权重的 dump 全部落盘**时才删除该 run 的 ckpt，KEEP 名单里的永不删。
+       这样"评测完就没用了"的权重不会堆到下一次满盘。
+[02:30] CLS 三格训练完成（ep49 全部正常），**只拿到 best/last**：
+       pa4_cls 83.74 / 89.44；pa4js_cls 84.92 / 89.71；sig_cls 86.71 / 89.14。
+       注意 `last` 上的排序（pa4js 89.71 > pa4 89.44 > sig 89.14）与 mean 读出时
+       （pa4k8 89.79 > pa4 89.54 > pa4js 89.14）**不一致**，等 swa_f0.5 补评后再判，先不下结论。

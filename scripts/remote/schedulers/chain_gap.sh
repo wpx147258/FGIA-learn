@@ -22,6 +22,17 @@ launch () { local gpu=$1 name=$2; shift 2
 waitnames () { local pat="$1"
   for _ in $(seq 1 60); do pgrep -f "$pat" >/dev/null 2>&1 && break; sleep 20; done
   while pgrep -f "$pat" >/dev/null 2>&1; do sleep 30; done; }
+# 评测完之后删掉本批的 checkpoint，防止再一次把 70G 的数据盘写满
+# （2026-10-30 02:30 满盘打死了 parand8 和 pa4js_cls 的 swa_f0.5）。
+# 只有 5 个权重的 dump 全部落盘才删；KEEP 里的参考权重永不删。
+KEEP="r50_all_pa4k8 r50_all_base r50_all_attnpcls"
+cleanup () { for n in "$@"; do
+  cnt=0; for c in best last swa_f05 swa_f06 swa_f07; do
+    [ -f "dumps/single_${n}_${c}_probs.npy" ] && cnt=$((cnt+1)); done
+  case " $KEEP " in *" $n "*) echo "[cleanup] keep $n" >> "$LOG"; continue;; esac
+  if [ "$cnt" -eq 5 ]; then rm -f outputs/$n/*/*.pth; echo "[cleanup] $n 5/5 dump 齐 -> 删 ckpt" >> "$LOG";
+  else echo "[cleanup] $n 只有 $cnt/5 dump，保留 ckpt" >> "$LOG"; fi
+done; }
 evalbatch () { for n in "$@"; do d=$(ls -dt outputs/$n/*/ 2>/dev/null|head -1)
   [ -n "$d" ] && { echo "--- eval $n" >> "$LOG"; $PY scripts/eval_all_ckpts.py --run-dir "$d" >> "$LOG" 2>&1; }; done; }
 
@@ -34,6 +45,7 @@ launch 2 r50_all_pa4k8_cls $PA MODEL.pa_parts=8 MODEL.pa_readout=cls
 launch 3 r50_all_pa4k8_ent1 $PA8 MODEL.pa_ent_w=1.0 MODEL.pa_ent_target=3.5 MODEL.pa_ent_ramp=0.3
 waitnames "EXP_NAME=(r50_all_t49|r50_all_attnp_d0|r50_all_pa4k8_cls|r50_all_pa4k8_ent1)$"
 evalbatch r50_all_t49 r50_all_attnp_d0 r50_all_pa4k8_cls r50_all_pa4k8_ent1
+cleanup r50_all_t49 r50_all_attnp_d0 r50_all_pa4k8_cls r50_all_pa4k8_ent1
 
 echo "=== G2 ===" >> "$LOG"
 launch 0 r50_all_pa4k8_ent3 $PA8 MODEL.pa_ent_w=3.0 MODEL.pa_ent_target=2.5 MODEL.pa_ent_ramp=0.3
@@ -42,6 +54,7 @@ launch 2 r50_all_pos       $AT MODEL.attn_pos=true
 launch 3 r50_all_dim512    $AT MODEL.attn_dim=512
 waitnames "EXP_NAME=(r50_all_pa4k8_ent3|r50_all_aux1|r50_all_pos|r50_all_dim512)$"
 evalbatch r50_all_pa4k8_ent3 r50_all_aux1 r50_all_pos r50_all_dim512
+cleanup r50_all_pa4k8_ent3 r50_all_aux1 r50_all_pos r50_all_dim512
 
 echo "=== G3 ===" >> "$LOG"
 launch 0 r50_all_heads8    $AT MODEL.attn_heads=8
@@ -50,4 +63,5 @@ launch 2 r50_all_div30     $PA TRAIN.pa_div_w=3.0
 launch 3 r50_all_pa4js_blur_v2 $PA MODEL.pa_js_w=0.5 MODEL.pa_js_target=0.35 MODEL.pa_mask_blur=true
 waitnames "EXP_NAME=(r50_all_heads8|r50_all_div03|r50_all_div30|r50_all_pa4js_blur_v2)$"
 evalbatch r50_all_heads8 r50_all_div03 r50_all_div30 r50_all_pa4js_blur_v2
+cleanup r50_all_heads8 r50_all_div03 r50_all_div30 r50_all_pa4js_blur_v2
 echo "[$(date '+%F %T')] CHAIN_GAP_DONE" >> "$LOG"
