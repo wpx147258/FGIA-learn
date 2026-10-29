@@ -209,15 +209,26 @@ class TokenLearner(nn.Module):
         )
         self.norm = nn.LayerNorm(dim)
         self.replace = bool(replace)
-        if readout not in ("mean", "cls", "concat"):
-            raise ValueError(f"readout 只能是 mean | cls | concat，收到 {readout!r}")
+        if readout not in ("mean", "cls", "concat", "gate"):
+            raise ValueError(f"readout 只能是 mean | cls | concat | gate，收到 {readout!r}")
         self.cat = None
+        self.gate_mlp = None
         if self.replace:
             # concat 读出：S 个 token 各自投影到 C/S 维，再拼起来（总维仍是 C，
             # 分类头大小与基线完全相同）。分类头于是能**对每个部件分别加权**，
             # 而不是先把它们平均掉 —— 这是 mean 读出不具备的信息通道。
-            if int(attn_depth) > 0 or readout not in ("mean", "concat"):
-                raise ValueError("TokenLearner 的 replace 只支持 attn_depth=0 且 readout=mean|concat")
+            if int(attn_depth) > 0 or readout not in ("mean", "concat", "gate"):
+                raise ValueError("TokenLearner 的 replace 只支持 attn_depth=0 且 readout=mean|concat|gate")
+            if readout == "gate":
+                # 逐 token 门控读出：pooled = GAP + Σ_s g_s·z_s，
+                # g_s 由每个 token 自己的特征算出来（逐样本动态），末层初始化 −10 → g≈4.5e-5，
+                # 初始输出≈GAP。好处是部件不可靠时模型可以**把门关掉退回 GAP**，
+                # 而不是被迫平均——这正是 mean 读出缺的那条退路。
+                self.gate_mlp = nn.Sequential(
+                    nn.Linear(in_channels, max(64, in_channels // 8)), nn.GELU(),
+                    nn.Linear(max(64, in_channels // 8), 1))
+                nn.init.zeros_(self.gate_mlp[-1].weight)
+                nn.init.constant_(self.gate_mlp[-1].bias, -10.0)
             if readout == "concat":
                 if in_channels % self.s != 0:
                     raise ValueError(
@@ -366,6 +377,10 @@ class TokenLearner(nn.Module):
             f_c = feat.flatten(2).transpose(1, 2)                # [B,N,C]
             z_c = torch.einsum("bns,bnc->bsc", w, f_c)           # [B,S,C]
             self._last_z = z_c
+            if self.gate_mlp is not None:
+                gap = feat.mean(dim=(2, 3))                       # [B,C]
+                g = torch.sigmoid(self.gate_mlp(z_c))             # [B,S,1]
+                return gap + (g * z_c).sum(dim=1)
             if self.cat is not None:
                 # [B,S,C] -> [B,S,C/S] -> [B,C]：部件各自占一段通道，分类头可分别加权
                 return self.cat(z_c).reshape(z_c.shape[0], -1)
