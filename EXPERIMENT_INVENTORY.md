@@ -712,3 +712,32 @@ return output + y[:, :, None, None]      # y 是 [B,C]，被广播到所有空�
 2. **SWA 相对单 checkpoint 的提升差异很大**：基线 +1.36、pa4 +0.98、pa4_k8 +0.73。
    这正是「单权重比较」会误导的地方。
 3. 但**排序在 f0.5 上仍然不变**：pa4（89.14）≈ pa4_k8（89.13）> 基线（89.02）。
+
+## 文献评测口径核查（独立 subagent，2026-10-29 23:00）
+
+**结论：主流 FGVC 论文用官方 5,994 train / 5,794 test，不切 val，报 test。**
+
+| 论文 | 训练集 | 切 val | 报什么 |
+|---|---|---|---|
+| CUB 官方（Wah et al. 2011） | 5,994 | 无官方 val | test |
+| **Mask-CNN（Wei, PR 2018）** | 5,994 | **否** | test |
+| Wei et al. TIP 2016 | 5,994 | 否 | test |
+| Wei 综述（TPAMI 2022） | 未写 | 未写 | 未写（Table 1 只给总数） |
+| MA-CNN / NTS-Net / WS-DAN / DCL / API-Net / CAL | 5,994 | 否 | test |
+| PMG / TransFG | 未写明 | 未写明 | test |
+| **VPT（ECCV 2022）/ Moment Probing（ICCV 2023）** | **5,394** | **是（600）** | test（val 选超参） |
+
+关键原文：Mask-CNN §4.1 “We follow the training and testing splitting included with the dataset.”
+VPT §4：“If a certain dataset only has train and test sets publicly available, we randomly split
+the training set into train (90%) and val (10%), and rely on val to select hyperparameters.”
+
+**对我们的意义（三条）：**
+
+1. **我们的 5,395 / 599 就是 VPT 那一套（只差 1 张）**，不是 FGVC 主榜口径；
+2. **把 599 张并回训练后的 5,994 口径（基线 89.80–89.94）才是与 MA-CNN/NTS-Net/CAL 可比的口径**；
+3. 汇报时应写成「官方 train 5,994；我们为模型选择留出 599 张，最终主结果在完整 5,994 上重训、
+   官方 5,794 test 上评测」，并同时给出两行数（5,395: 89.06 / 5,994: 89.80–89.94），
+   标清训练集大小——这不是换设定，而是把模型选择集显式化。
+
+⚠️ **alltrain 协议下的注意事项**：val 已被并入训练，训练日志里的 `val_top1`（ep3 就 91–93%）
+是**训练集上的准确率**，不能用于选模型；必须用固定规则（SWA / last）评测。

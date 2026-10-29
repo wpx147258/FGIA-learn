@@ -218,3 +218,7 @@
        R50 注意力配置（14 个），逐个评测 best/last/swa_f0.5/0.6/0.7。
        ViT / alltrain / 蒸馏那批不纳入（不同协议或已被约束排除）。
        工具：scripts/eval_all_ckpts.py（单 run）+ scripts/batch_eval_all.sh（批量），两边都能用。
+[23:05] 文献口径核查（subagent）：主流 FGVC（MA-CNN/NTS-Net/API-Net/CAL/WS-DAN/Mask-CNN）都是
+       5,994 train / 5,794 test、不切 val、报 test；5,394/600 那套来自 VPT(ECCV'22)/Moment Probing(ICCV'23)。
+       魏秀参的 Mask-CNN 原文「follow the training and testing splitting included with the dataset」。
+       → 我们的 5,395/599 是 VPT 口径；alltrain（5,994）才是主榜口径，基线 89.80–89.94。
