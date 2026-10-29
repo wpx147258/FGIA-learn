@@ -3,7 +3,7 @@
 # 用户要求：每个 SWA 平滑权重和 best、last 都要测——测试成本低，只测 f0.5 会误判。
 set -u
 cd "$(dirname "$0")/.." || exit 1
-PY=/home/wpx/anaconda3/bin/python
+if [ -x /home/wpx/anaconda3/bin/python ]; then PY=/home/wpx/anaconda3/bin/python; else PY=/root/miniconda3/bin/python; fi
 LOG=logs/eval_all.log
 NAMES="${1:-}"
 [ -z "$NAMES" ] && NAMES="r50_base_repro r50_base_e100_sv r50_pa4 r50_pa4_s1 r50_pa4_s2 r50_pa4_k8 r50_pa4_ctrl r50_pa4_logit r50_pa4_l3_k4b r50_pa2 r50_pa3 r50_pa5 r50_pa_aux r50_attnp_cls r50_attnp_ctrl r50_attnp_gate r50_attnp_cat r50_attnp_cls_d2 r50_attnp_t49 r50_tl_cls_d1 r50_tl_cls_d2 r50_tl_gate_s1 r50_tl_gate_s2 r50_tl_catgap r50_tl_gate_catgap r50_nocam r50_camfuse r50_long75 r50_se_gate_res r50_gth_pad08"

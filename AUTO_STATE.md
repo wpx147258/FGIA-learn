@@ -214,3 +214,7 @@
        · **原 checkpoint 已在磁盘清理中被删**，无法复查其他 SWA 因子。
        已重跑 pa4_js（SEED=7）并同时评 f0.5/0.6/0.7，验证「val 高是不是 f0.6 的功劳」。
        教训：磁盘清理应当保留「还在讨论中」的配置权重，不能一律删。
+[22:45] 按用户要求把「全权重评测」收敛到代表性配置：只挑 **SWA val ≥89.0 或 test ≥88.8** 的
+       R50 注意力配置（14 个），逐个评测 best/last/swa_f0.5/0.6/0.7。
+       ViT / alltrain / 蒸馏那批不纳入（不同协议或已被约束排除）。
+       工具：scripts/eval_all_ckpts.py（单 run）+ scripts/batch_eval_all.sh（批量），两边都能用。
