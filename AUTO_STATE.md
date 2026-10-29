@@ -222,3 +222,9 @@
        5,994 train / 5,794 test、不切 val、报 test；5,394/600 那套来自 VPT(ECCV'22)/Moment Probing(ICCV'23)。
        魏秀参的 Mask-CNN 原文「follow the training and testing splitting included with the dataset」。
        → 我们的 5,395/599 是 VPT 口径；alltrain（5,994）才是主榜口径，基线 89.80–89.94。
+[23:10] 用户决定：**后续实验不再切 val，直接全训（5,994）**。
+       已确认文献口径支持这一点（主流 FGVC 都是 5,994 训练、不切 val、报 test；
+       我们的 5,395 是 VPT 那套）。主基线随之改为 alltrain 四粒均值 89.80。
+       注意：全训后 val 是训练数据，日志里的 val_top1 不能用于选模型，只能用固定规则（SWA/last）评测。
+[23:10] 乘性空间残差四格（全权重）：f0.5 分别为 88.99 / 88.85 / 88.78 / 88.83，
+       均低于同 K 的加性残差（89.13 / 89.14）。γ 训练后仍很小，乘性分支基本没起作用。
