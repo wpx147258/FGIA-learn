@@ -159,3 +159,11 @@
        `run r50_tl_ceil05_noramp/03` 是空转的（命令不存在，静默失败）。
        已拆成独立脚本 queue_local_ceil.sh（带 run 函数），并挂 watcher 在 pa4_l3_k4b 结束后执行。
        tl_cls_d2 出分 88.63（−0.43，p=0.15）；深度 1→2 在 TL 上也是没有增益。
+[12:15] F 轮全军覆没（替换出口 −4.3~−5.0，退火救不回；残差 88.59）→ 结论：集中度不是杠杆，
+       问题在 mean 读出。按用户指示转向**非 mean 读出**，新实现门控读出：
+         pooled = GAP + Σ_s g_s·z_s，g_s = sigmoid(MLP(z_s))，末层初始 −10
+         → 初始 |out − GAP| = 1.4e-4（等价基线），部件不可靠时可以把门关掉退回 GAP。
+       新排 BATCH R（4 格，排在所有补齐批之前）：
+         tl_gate_aux / tl_gate_ceil_aux（门控 × 有无熵上限）
+         tl_cat_aux / tl_cat_ceil_aux（拼接 × 有无熵上限）
+       调度器 /root/restore7.sh 已在跑（等 BATCH 1 的 4 格结束后开始）。
