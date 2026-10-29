@@ -62,14 +62,24 @@ best/last/f0.5/f0.6/f0.7 = 84.73/89.07/89.02/89.01/88.95，**五个完全相同*
 
 ## 4. 之后自动接的批次（远程，已挂链）
 
-`chain_pa → chain_long → chain_gap → chain_true_repro → chain_restore`
+`chain_pa → chain_long → chain_gap → chain_true_repro → chain_res → chain_restore`
 
 | 顺序 | 脚本 | 内容 |
 |---|---|---|
 | 下一批 | `chain_long.sh` | `all_e75` / `all_e75_m2` / `all_e100` / `all_attnpcls_e75`（破 90 主押注） |
 | 再下 | `chain_gap.sh` | 12 格缺口：t49 / attnp_d0 / pa4k8_cls / **pa4k8_ent1** / **pa4k8_ent3** / aux1 / pos / dim512 / heads8 / div03 / div30 / pa4js_blur_v2 |
 | 再下 | `chain_true_repro.sh` | `r50_pa4js_c1`（std 分母 195 的精确复现） |
+| 再下 | `chain_res.sh` | **新实验批**：分辨率 512（基线 / PA）、CAM 裁剪权重 0.35、一致性 0.6 |
 | 最后 | `chain_restore.sh` | **补回被重排换下的五格**：tau005 / tau02 / sigk8 / sigk8_blur / pa4js_l3，外加 k2 与 `attnp_mean` |
+
+### chain_res：按已有结论挑的四格
+
+| 实验 | 依据 |
+|---|---|
+| `all_r512_base` | **输入分辨率从没动过**（全程 448）。细粒度上这是标准增益项；而 stride-8 试过更差（88.56），说明"改分辨率"≠"改下采样" |
+| `all_r512_pa4k8` | 同上 + 目前最好的 PA 配置 |
+| `all_cam035` | CAM 裁剪分支是**唯一被反复验证为正**的组件（`nocam` 88.21 vs 89.06，+0.85~1.19），但只扫过 margin/alpha，**损失权重从没扫过** |
+| `all_cons06` | 同一分支的一致性权重 0.3→0.6 |
 
 ### 为什么要 chain_restore
 
