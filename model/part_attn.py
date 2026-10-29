@@ -49,7 +49,7 @@ class PartAttention(nn.Module):
                  js_w: float = 0.0, js_target: float = 0.35,
                  mul: bool = False, mul_center: bool = True, mul_gate: float = -10.0,
                  mask_blur: bool = False, readout: str = "mean",
-                 std_correction: int = 0):
+                 std_correction: int = 0, random_masks: bool = False):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -97,6 +97,11 @@ class PartAttention(nn.Module):
         # 缩放 0.26%。这个开关是为了**精确复现历史 run**（原 pa4_js 用的是 correction=1，
         # 即 N−1=195），不是调参项。
         self.std_correction = int(std_correction)
+        # 对照：用**固定的随机掩码**替换学到的掩码（不参与梯度）。
+        # 用途：如果「随机掩码」与「学到的掩码」成绩相同，说明空间结构根本没起作用，
+        # 部件线的收益（如果有）只来自通道分组 / 逐部件 CE / 额外参数。
+        self.random_masks = bool(random_masks)
+        self.register_buffer("_rand_m", None, persistent=False)
         self.mul = bool(mul)
         # mul_center：先把每张掩码减去自己的空间均值，使 Σ_k m 的均值为 0、
         # 增益 1+Σm 的均值为 1（初始平均不改尺度）。不居中时 K 张 sigmoid 掩码
@@ -184,7 +189,15 @@ class PartAttention(nn.Module):
         # 这一点很关键：散度项是在 [0,1] 的掩码上做的（margin=0.02），
         # 而 softmax 后的值只有 1/N（约 0.005），两者尺度差两个数量级，
         # 直接套 hinge 会永远落在 margin 下方、等于没加正则。
-        raw = self.det(feat).flatten(2)                  # [B,K,N]
+        if self.random_masks:
+            if self._rand_m is None or self._rand_m.shape[-2:] != (h, w):
+                g = torch.Generator(device=feat.device).manual_seed(1234)
+                m0 = torch.rand(1, self.num_parts, h, w, generator=g, device=feat.device)
+                self._rand_m = (m0 / m0.sum(dim=(2, 3), keepdim=True) * (h * w) * 0.5).clamp(1e-3, 1.0)
+            m = self._rand_m.expand(b, -1, -1, -1)        # 固定、跨样本相同、不学习
+            raw = m.flatten(2)
+        else:
+            raw = self.det(feat).flatten(2)               # [B,K,N]
         if self.norm_spatial:
             raw = (raw - raw.mean(dim=-1, keepdim=True)) / raw.std(dim=-1, keepdim=True, correction=self.std_correction).clamp_min(1e-5)
         if self.compete:
@@ -397,6 +410,7 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         mask_blur=bool(mcfg.get("pa_mask_blur", False)),
         readout=str(mcfg.get("pa_readout", "mean")),
         std_correction=int(mcfg.get("pa_std_correction", 0)),
+        random_masks=bool(mcfg.get("pa_random_masks", False)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),

@@ -178,6 +178,8 @@ MODEL:
   pa_readout: mean
   # norm_spatial 里 std 的自由度：0 → N（当前默认）| 1 → N−1（历史默认，用于精确复现旧 run）
   pa_std_correction: 0
+  # 对照：固定随机掩码（不学习）。若与学到的掩码成绩相同，说明空间结构没起作用。
+  pa_random_masks: false
   # 是否先把掩码减去空间均值（使增益均值=1，初始不改变特征尺度）。默认开。
   pa_mul_center: true
   # γ 的 logit 初值：-10 → γ≈4.5e-5（初始恒等）；0 → γ=0.5（一开始就起作用）
