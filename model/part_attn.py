@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from model.global_ctx import _sincos_2d
 
@@ -46,7 +47,8 @@ class PartAttention(nn.Module):
                  res_scale: float = 0.0, no_residual: bool = False,
                  detach_feat: bool = False, perm_path: str = "", kernel: int = 1,
                  js_w: float = 0.0, js_target: float = 0.35,
-                 mul: bool = False, mul_center: bool = True, mul_gate: float = -10.0):
+                 mul: bool = False, mul_center: bool = True, mul_gate: float = -10.0,
+                 mask_blur: bool = False):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -75,6 +77,11 @@ class PartAttention(nn.Module):
         # 乘性空间残差：output = output * (1 + γ · Σ_k m_k)，γ = sigmoid(mul_gate)。
         # 与加性残差的本质区别：这里改的是**每个位置的增益**，GAP 之后位置权重真的变了；
         # 加性版本把 [B,C] 广播到所有位置，等价于逐通道常数偏移，表达不了空间重加权。
+        # mask_blur：掩码先做 3×3 平均池化再用。原因（2026-10-29 诊断）：
+        # 掩码是「铺满全图的碎斑」——熵 4.45~4.96/5.28、平均 13 个连通块、邻居相关只有 0.27。
+        # 根因是 1×1 检测器 + 逐格标准化，没有任何空间平滑先验；而输出只是全图格子的
+        # 加权平均，模型没有动力让掩码成片。3×3 平滑是把它变回「区域」的最小改动。
+        self.mask_blur = bool(mask_blur)
         self.mul = bool(mul)
         # mul_center：先把每张掩码减去自己的空间均值，使 Σ_k m 的均值为 0、
         # 增益 1+Σm 的均值为 1（初始平均不改尺度）。不居中时 K 张 sigmoid 掩码
@@ -254,7 +261,12 @@ class PartAttention(nn.Module):
             m = (raw / self.tau).softmax(dim=1)
         else:
             m = torch.sigmoid(raw)
-        return m.view(b, k, h, w)
+        m = m.view(b, k, h, w)
+        if self.mask_blur:
+            # 3×3 平均（步长 1、padding 1）后再归一化：把碎斑连成片。
+            # 注意 compete 下 sum_k m = 1，池化后仍然成立（平均是线性算子）。
+            m = F.avg_pool2d(m, kernel_size=3, stride=1, padding=1)
+        return m
 
     def hook(self, module, inputs, output):
         """layer4 的 forward hook：GAP 之前把部件注意力的结果加进去。
@@ -361,6 +373,7 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         mul=bool(mcfg.get("pa_mul", False)),
         mul_center=bool(mcfg.get("pa_mul_center", True)),
         mul_gate=float(mcfg.get("pa_mul_gate", -10.0)),
+        mask_blur=bool(mcfg.get("pa_mask_blur", False)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),
