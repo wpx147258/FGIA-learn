@@ -80,7 +80,9 @@ class PartAttention(nn.Module):
         # 增益 1+Σm 的均值为 1（初始平均不改尺度）。不居中时 K 张 sigmoid 掩码
         # 的均值约 K/2，整幅特征会被放大 (1+K/2) 倍，等于把预训练尺度打乱。
         self.mul_center = bool(mul_center)
-        self.mul_gate = nn.Parameter(torch.tensor([float(mul_gate)]))
+        # ⚠️ 只有开 mul 时才创建这两个参数：否则旧 checkpoint（没有 mul_gate）
+        # 会因为 state_dict 缺键而加载失败（实测踩过）。
+        self.mul_gate = nn.Parameter(torch.tensor([float(mul_gate)])) if self.mul else None
         # ⚠️ 与 compete 的交互（实测发现）：compete=True 时掩码在每个位置对 K 求和恒为 1，
         # 因此「各掩码减去空间均值后再求和」恒等于 0，乘性增益会退化成恒等（实测 std 5e-8）。
         # 解决办法：每个部件配一个可学习权重 c_k（随机小初始化），gain = 1 + γ·Σ c_k·m̃_k。
