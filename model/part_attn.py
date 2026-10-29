@@ -48,7 +48,7 @@ class PartAttention(nn.Module):
                  detach_feat: bool = False, perm_path: str = "", kernel: int = 1,
                  js_w: float = 0.0, js_target: float = 0.35,
                  mul: bool = False, mul_center: bool = True, mul_gate: float = -10.0,
-                 mask_blur: bool = False):
+                 mask_blur: bool = False, readout: str = "mean"):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -82,6 +82,15 @@ class PartAttention(nn.Module):
         # 根因是 1×1 检测器 + 逐格标准化，没有任何空间平滑先验；而输出只是全图格子的
         # 加权平均，模型没有动力让掩码成片。3×3 平滑是把它变回「区域」的最小改动。
         self.mask_blur = bool(mask_blur)
+        # 部件 token 的读出方式：
+        #   mean —— 直接对 K 个部件 token 取平均（历史默认）；
+        #   cls  —— 在最前面拼一个全局 token（初值=部件 token 的均值），过自注意力后读它。
+        # 为什么要有 cls：AttnPool 上 mean→cls 把 88.18 拉到 88.99（−0.88 → −0.07），
+        # 说明「读出方式」在这类模块上不是小事；而 PartAttention 一直只有 mean 读出，
+        # 这是一处此前没有意识到的对照缺失。
+        if readout not in ("mean", "cls"):
+            raise ValueError(f"pa_readout 只能是 mean | cls，收到 {readout!r}")
+        self.readout = readout
         self.mul = bool(mul)
         # mul_center：先把每张掩码减去自己的空间均值，使 Σ_k m 的均值为 0、
         # 增益 1+Σm 的均值为 1（初始平均不改尺度）。不居中时 K 张 sigmoid 掩码
@@ -192,8 +201,14 @@ class PartAttention(nn.Module):
             f = feat.flatten(2)                              # [B,C,N]
             z = torch.einsum("bkn,bcn->bkc", a, f)           # [B,K,C]
         t = self.proj(z) + self.emb                      # [B,K,d]
-        t = self.blocks(t)
-        pooled = self.norm(t).mean(dim=1)                # [B,d]
+        if self.readout == "cls":
+            # 全局 token 初值取部件 token 的均值（与 AttnPool / TokenLearner 的 CLS 一致）
+            g = t.mean(dim=1, keepdim=True)              # [B,1,d]
+            tt = self.blocks(torch.cat([g, t], dim=1))   # [B,K+1,d]
+            pooled = self.norm(tt)[:, 0]                 # [B,d]
+        else:
+            t = self.blocks(t)
+            pooled = self.norm(t).mean(dim=1)            # [B,d]
         y = self.out(pooled)                             # [B,C]
 
         # ---- MA-CNN 的两项正则（L_cng = Dis + λ·Div，λ=2）----
@@ -374,6 +389,7 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         mul_center=bool(mcfg.get("pa_mul_center", True)),
         mul_gate=float(mcfg.get("pa_mul_gate", -10.0)),
         mask_blur=bool(mcfg.get("pa_mask_blur", False)),
+        readout=str(mcfg.get("pa_readout", "mean")),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),
