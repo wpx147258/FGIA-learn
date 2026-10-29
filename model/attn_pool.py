@@ -85,12 +85,14 @@ class AttnPool(nn.Module):
         #            本身」是否有害。
         self.replace = bool(replace)
         if self.replace:
-            # ⚠️ 不可行：proj 是 C->dim 的降维（dim=256 < C=2048），从 dim 维还原 C 维
-            # 只是最小二乘投影，初始输出与 GAP 的差距约 0.27（logit 尺度），
-            # 不是「初始等于 GAP」。要精确替换 GAP，必须把注意力权重直接作用在
-            # C 维原始特征上（见 TokenLearner 的 replace 分支）。
-            raise ValueError("AttnPool 的 replace 模式不可用（dim < C 无法还原 GAP）；"
-                             "请用 MODEL.tokenlearner + tl_replace 或 MODEL.content_pool")
+            # 替换 GAP 的出口：pooled = a·back(v) + (1−a)·GAP，a = sigmoid(alpha)。
+            # ⚠️ 已知代价：proj 是 C→dim 的降维（dim < C），back 把 dim 还原成 C 只是
+            # 最小二乘意义下的投影，**初始输出与 GAP 有偏差**（logit 尺度约 0.27），
+            # 不像 TokenLearner 的 replace 那样能精确等于 GAP。这条出口是用来检验
+            # 「把 GAP 完全换掉」本身值不值得，偏差作为已知代价接受。
+            # alpha 初始 0 → a = 0.5：一半 GAP、一半注意力池化结果。
+            self.back = nn.Linear(dim, out_dim)
+            self.alpha = nn.Parameter(torch.zeros(1))
         else:
             self.out = nn.Linear(dim, out_dim)
             nn.init.zeros_(self.out.weight)
