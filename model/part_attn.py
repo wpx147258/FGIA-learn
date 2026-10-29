@@ -245,6 +245,9 @@ class PartAttention(nn.Module):
         选前者是为了让 CAM 裁剪分支、y=None 早退路径、PMG、BN 重估全部自动经过它。
         """
         y = self.forward(output)
+        # 诊断用：bypass=True 时完全不加残差，用来量「部件分支到底改了多少」
+        if getattr(self, "bypass", False):
+            return output
         if self.no_residual:
             return output
         if self.res_scale > 0:
@@ -255,6 +258,11 @@ class PartAttention(nn.Module):
             yn = y.norm(dim=1)                                      # [B]
             s = (self.res_scale * g / (yn + g).clamp_min(1e-6)).detach()
             y = y * s[:, None]
+        self._last_res = y.detach()
+        # ⚠️ 注意这里的广播：y 是 [B,C]，加在 [B,C,1,1] 上 = **每个空间位置加同一个通道向量**。
+        # 由于 GAP 线性，送到分类器的就是 pooled = GAP + y —— 一个逐通道的加性偏移。
+        # 也就是说默认残差出口**无法改变空间权重**，部件掩码只影响 y 的取值，
+        # 不影响池化时各位置的权重。要真正做空间重加权，必须乘在特征图上或替换池化。
         return output + y[:, :, None, None]
 
 
