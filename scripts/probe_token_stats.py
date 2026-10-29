@@ -75,7 +75,7 @@ def main():
     ds = CUBDataset(resolve_path(dcfg["root"]), "test",
                     build_transform(dc, dcfg["image_size"], train=False), dcfg["num_classes"])
     dl = DataLoader(ds, batch_size=a.batch_size, shuffle=False, num_workers=dcfg["num_workers"])
-    rows = []; seen = 0
+    rows = []; feat_rows = []; seen = 0
     with torch.no_grad():
         for b in dl:
             x = b["image"].to(dev)
@@ -85,6 +85,16 @@ def main():
                 t = tl.proj(fm).flatten(2).transpose(1, 2)
                 w = tl.score(t).softmax(dim=1)                 # [B,N,S]
             rows.append(pair_metrics(w.float()))
+            # 特征空间的互补性：把每个 token 的描述子 z_s 去中心后算两两余弦。
+            # 掩码可以重叠（真实部位本来就重叠），但描述子若完全一样就说明没有互补证据。
+            with torch.autocast("cuda", enabled=False):
+                ff = fm.float()
+                z = torch.einsum("bns,bnc->bsc", w.float(), ff.flatten(2).transpose(1, 2))
+                zc = z - z.mean(dim=1, keepdim=True)
+                zn = zc / zc.norm(dim=2, keepdim=True).clamp_min(1e-6)
+                fcos = zn @ zn.transpose(1, 2)                  # [B,S,S]
+                off = 1.0 - torch.eye(fcos.size(1), device=fcos.device)
+                feat_rows.append(fcos[:, off.bool()].mean().item())
             seen += x.shape[0]
             if seen >= a.n: break
     mean = [sum(r[i] for r in rows) / len(rows) for i in range(10)]
@@ -98,6 +108,9 @@ def main():
     print(f"  iou_top5%    {mean[4]:.4f}")
     print(f"  每图平均JS   min={mean[6]:.3f} median={mean[7]:.3f} max={mean[8]:.3f}"
           f"   <0.15 的图占比 {mean[9]:.3f}  (高 = 有图是副本)")
+    if feat_rows:
+        fv = sum(feat_rows)/len(feat_rows)
+        print(f"  token 特征余弦（去中心）  {fv:.4f}   (0 = 各部件提供不同证据；1 = 完全是同一份)")
 
 
 if __name__ == "__main__":
