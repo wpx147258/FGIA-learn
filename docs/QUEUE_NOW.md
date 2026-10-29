@@ -1,68 +1,98 @@
-# 当前排队实验总表（2026-10-29 10:15）
+# 排队与现场（2026-10-30 00:40）
 
-口径：单视图、单权重（短边 512 → 中心裁 448），与 `r50_base_repro` = **89.06** 逐张配对。
-所有 run 跑完自动 `test_tta --views base --dump`（`restore_plan.sh` 末尾的 EVAL PASS）。
+> 上下文压缩前更新。**每次派批次/改链路后必须同步这份**。
 
-## 口径：评价指标已换轴
+## 0. 口径（两条硬约定）
 
-| 指标 | 工具 | 判读 |
-|---|---|---|
-| 富集比（落在 GT 框内的质量） | `probe_mask_on_object.py` | 均匀 1.00× / GAP 1.37× |
-| 逐 token CE | 训练日志 `train_logits_tl` | 每个部件能否单独分类（0.8~1.0 = 能） |
-| token 特征去中心余弦 | `probe_token_stats.py` | 0 = 各部件提供不同证据；1 = 同一份 |
-| 门控值分布 | `probe_gate_stats.py` | 门是否真的打开；关闭比例、|pooled−GAP| |
+1. **主口径 = 全训（5,994）**：用户 10-29 22:40 决定「后面不切 val，直接全训」。
+   文献核查支持：MA-CNN/NTS-Net/API-Net/CAL/WS-DAN/Mask-CNN 都是 5,994 训练、不切 val、报 test；
+   我们的 5,395/599 是 VPT(ECCV'22) 那套。
+   ⚠️ 全训后日志里的 `val_top1` 是**训练集**准确率（96~100%），不能用于选模型，只能按固定规则评测。
+2. **每个 run 都要评 5 个权重**：`best` / `last` / `swa_f0.5` / `f0.6` / `f0.7`
+   （工具 `scripts/eval_all_ckpts.py --run-dir <dir>`）。**主表固定 f0.5**，其余只作稳健性检查。
 
----
+## 1. 正在跑
 
-# 当前排队（2026-10-29 14:00）
-
-## A. 正在跑
-
-| # | 实验 | 位置 | 进度 | 目的 |
-|---|---|---|---|---|
-| 1 | `r50_attnp_nodrop_s1` | 本地 | ep32 val 87.57 | 89.23（dropout 对齐后的最高注意力成绩）的 **seed 复现** |
-| 2 | `r50_pa2_ctrl` | 远程 GPU0 | ep21 val 85.22 | pa2（竞争 tau=1）的参数对齐控制臂 |
-| 3 | `r50_pa3_ctrl` | 远程 GPU1 | ep21 val 85.07 | pa3（tau=0.1）的控制臂 |
-| 4 | `r50_camfuse3` | 远程 GPU2 | ep16 val 84.76 | 三路 CAM 融合（整图 + margin1.3 + margin1.9） |
-| 5 | `r50_hypfuse2` | 远程 GPU3 | ep12 val 82.32 | top1/top2 双类别区域 + 可学习融合 |
-
-## B. 远程队列（按序，`/root/restore7.sh`）
-
-| # | 批次 | 实验 | 目的 |
+| 位置 | 实验 | 批次 | 动机 |
 |---|---|---|---|
-| 6 | BATCH 3 | `r50_rerank2` | 部件掩码裁出 → 共享骨干重编码（K=2） |
-| 7 | BATCH 3 | `r50_rerank4` | 同上 K=4 + 通道分组 + `pr_use_cam` |
-| 8 | BATCH 3 | `r50_pa4_lr1` | 部件分支 lr 1e-4（对照组 5e-4） |
-| 9 | BATCH 3 | `r50_pa4_logit_s1` | **去残差 + logit 融合**的 seed 复现（原格 88.87） |
-| 10 | BATCH 4 | `r50_partaux` | 部件辅助监督（pta_aux 0.2 + pta_cons 0.3） |
-| 11 | BATCH 4 | `r50_pa4_res` | **有界残差 0.3**（10/28 那次因 res_scale bug 崩溃，从未有结果） |
-| 12 | BATCH 4 | `r50_pa4_k8_s2` | **K=8 第三粒 seed**（现有 89.21 / 89.09，是唯一两粒同向为正的注意力配置） |
-| 13 | BATCH 5 | `r50_attnp_d0_sv` | AttnPool depth=0 控制臂（单视图） |
-| 14 | BATCH 5 | `r50_attnp_t49_sv` | 49 token 单视图（此前只有四视图 89.13） |
-| 15 | EVAL PASS | 上述全部 + 已训完未评的 | 自动 `test_tta --views base`，并删除多余权重 |
+| 远程 GPU0–3 | `all_sig` / `all_sig_js` / `all_pa4js`（补跑）/ `all_sig_blur` | `chain_sig.sh` | **compete=false**（允许重叠）× 有无 JS × 平滑 |
+| 本地 3090 | `r50_all_attnpcls_s1`（ep17） | `queue_all_attnpcls_s1.sh` | 全训最好格 89.85 的**种子复现** |
 
-## C. 本地队列（按序，watcher 链）
+## 2. 之后自动接的批次（远程，已挂链）
 
-| # | 实验 | 目的 |
+| 顺序 | 脚本 | 四格 | 目的 |
+|---|---|---|---|
+| 下一批 | `chain_cls.sh` | `all_pa4_cls` / `all_pa4js_cls` / `all_sig_cls` | **PartAttention 的 CLS 读出**（历史只有 mean） |
+| 再下一批 | `chain_long.sh` | `all_e75` / `all_e75_m2` / `all_e100` / `all_attnpcls_e75` | **全训 + 更长训练**；并把历史 `long75` 的「长度」与「双尺度一致性」拆开 |
+
+链路：`chain_sig` →（`CHAIN_SIG_DONE`）→ `chain_cls` →（`CHAIN_CLS_DONE`）→ `chain_long`。
+
+## 3. 已出的结果（全训协议，f0.5 单视图）
+
+| 实验 | test | vs 全训基线 89.61 |
 |---|---|---|
-| 16 | `r50_attnp_gate` | **AttnPool 门控读出**（`GAP + Σ g_n·out(t_n)`，初始输出精确为 0）；判断 196 位置的门会不会像 8 区域那样被关死 |
-| 17 | `r50_attnp_cls_rep` | **替换 GAP 的 AttnPool**（89.23 同配置：CLS、depth1、dropout 0；初始 a=0.5，|pooled−GAP|/|GAP|≈2.3、logit 差 0.058） |
+| `all_base` | **89.61** | — |
+| **`all_attnpcls`** | **89.85** | **+0.24**（待种子复现，本地在跑） |
+| `all_pa4k8_blur` | **89.59** | −0.02 |
+| `all_pa4_blur` | 89.42 | −0.19 |
+| `all_pa4js_blur` | 89.13 | −0.48 |
+| `all_pa4k8` / `all_pa4` | 待补评 | 之前 OOM |
 
-## D. 已完成、已有结论（今日）
+**掩码平滑（碎斑→区域）没有带来增益**：`pa4_blur` 89.42、`pa4js_blur` 89.13，都低于
+未平滑的 `all_pa4`/`all_pa4k8`（待补评）与基线。
 
-`gc` 88.87 / `gc_ctrl` 88.75 / `clip_gap` 84.47 / `clip_ap` 80.51 /
-`attnp_nodrop` 89.23 / `tl_nodrop` 88.68 / `pa` 88.80 / `pa_ctrl` 88.68 /
-F 轮 `ceil15` 84.71、`ceil10` 84.05、`ceil05_ramp` 84.41、`ceil05_res` 88.59 /
-BATCH R `gate` 89.09、`gate_ceil` 86.76、`cat` 88.09、`cat_ceil` 84.59 /
-`attnp_cls_d2` 88.95 / `tl_cls_d2` 88.63 / `pa4_l3_k8` 88.71 / `pa4_l3_k4` 88.63 /
-`pa4_k8_s1` 89.09 / `se_gate_res` 88.85 / `se_gate_sigmoid` 88.78 / `se_fixed` 87.87
+## 4. pa4_js 的三次运行（5,395 口径）——val 89.91 的结论
 
-## E. 仍未排 / 待决策
+| run | 机器 | SEED | best val | test f0.5 |
+|---|---|---|---|---|
+| 原 `pa4_js` | 远程 3080Ti | 42 | **89.91** | 88.82 |
+| `pa4js_s42r` | 远程 3080Ti | 42 | **89.76** | **88.56** |
+| `pa4js_s42` | 本地 3090 | 42 | 88.97 | 88.78 |
+| `pa4js_r2` | 本地 3090 | 7 | 89.29 | 88.97 |
 
-| 项 | 卡在哪 |
-|---|---|
-| `r50_rerank2_ctrl` | 原队列里与 `rerank2` 参数逐字相同（复制粘贴漏改），需重新定义对照 |
-| `r50_s8_gc` | 条件项：`gc` 无收益，暂不跑 |
-| PMG **200 epoch** | 计划 H3，只有 50 epoch 的 89.25；约 7 小时 |
-| Cross-X / DF-GMM / NAC-DFL | 仓库无实现，需先写代码 |
-| `r50_gth_w_s3` | 强监督项，按用户要求暂停 |
+**两条结论**：
+1. **val 89.9 在远程可复现（89.76），本地复现不了（88.97）**——同种子同配置，val 差 0.79，
+   而 test 只差 0.22。说明 **val（599 张）对训练数值差异极其敏感，会放大成 1 个点的假信号**。
+2. **val 89.76 → test 88.56**。高 val 完全不预示高 test。pa4_js 的 test 四粒在 88.56–88.97，
+   均低于基线三粒均值 88.95。
+
+## 5. 机制诊断（回答「为什么不行」的关键证据）
+
+| 发现 | 数值 | 出处 |
+|---|---|---|
+| 部件掩码是**铺满全图的碎斑** | 熵 4.45–4.96 / 5.28、平均 **13 个连通块**、邻居相关 0.27 | `figs/pa4js_maps.png` + 探针 |
+| **compete 把部件变成随机划分** | 每位置在 K 个部件上的分配熵 0.55/1.386、独占度 0.65；Σ_k m ≡ 1 ⇒ 部件不能重叠 | 2026-10-29 23:50 |
+| 加性残差在 logit 空间是**类无关偏置** | cos(Δlogit, logit) = −0.995；去掉类间均值后只剩 3.6% | `probe_part_residual.py` |
+| 富集比 | pa4_js 1.12×、pa4 1.13×（GAP 1.37×） | `probe_mask_on_object.py` |
+| 乘性残差 γ 训完仍很小 | 四个乘性变体 88.78–88.99，低于加性 89.13/89.14 | 2026-10-29 23:10 |
+
+**当前最有解释力的因果链**：检测器是 1×1 卷积 + 逐格标准化 +（compete）逐位置 softmax，
+没有任何空间先验 ⇒ 掩码是「随机的 1/K 划分」⇒ 加权平均≈GAP ⇒ 残差只是逐通道常数偏移。
+掩码平滑（邻居相关 0.27→0.66）修好了形态，但 **test 没有跟上**（89.42/89.13），
+说明「部位成形」不等于「部位提供信息」。
+
+## 6. 仍未排队（按价值排序）
+
+| # | 缺口 | 备注 |
+|---|---|---|
+| 1 | 全训 + 49 token | 5,395 口径 88.85 |
+| 2 | 全训 + AttnPool depth=0 控制臂 | 没有它说不清 89.85 是注意力还是那层池化 |
+| 3 | PA 的 K=8 + CLS 读出 | CLS 三格都是 K=4 |
+| 4 | τ 扫描（0.05 / 0.2） | 掩码近 one-hot，τ 从未扫过 |
+| 5 | 逐部件 CE 权重 1.0 | 只用过 0.25/0.5 |
+| 6 | `attn_pos=true` | 从未跑；PART 消融里位置编码 +0.6~0.7 |
+| 7 | `attn_dim=512` / `heads=8` | 256/4 是拍的 |
+| 8 | 散度项权重 0.3/3.0 | 固定 1.0 |
+
+## 7. 脚本与文件位置
+
+- **远程** `/root/`：`chain_sig.sh`、`chain_cls.sh`、`chain_long.sh`、`launch_blur.sh`、
+  `launch_alltrain.sh`、`remote_pa4js_s42.sh`、`eval_pending.sh`
+  （已全部归档进 `scripts/remote/schedulers/`）
+- **本地** `scripts/`：`queue_pa4js_s42.sh`、`queue_all_attnpcls_s1.sh`、
+  `queue_pa4js.sh`、`batch_eval_all.sh`、`eval_all_ckpts.py`
+- **探针**：`probe_mask_on_object.py`（富集比）、`probe_part_residual.py`（残差是否影响决策）、
+  `probe_gate_stats.py`（门控）、`probe_token_stats.py`（掩码统计）、`vis_token_maps.py`（可视化）
+- **文档**：`docs/RUNNING_NOW.md`（现场）、`docs/EXPERIMENT_HISTORY.md`（历史总表）、
+  `EXPERIMENT_INVENTORY.md`（滚动清单）、`AUTO_STATE.md`（时间线日志）、
+  `PART_ATTENTION_FINDINGS.md`（机制结论）
