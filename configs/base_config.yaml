@@ -176,6 +176,8 @@ MODEL:
   pa_mask_blur: false
   # 部件 token 的读出方式：mean（历史默认）| cls（拼全局 token 过注意力后读它）
   pa_readout: mean
+  # norm_spatial 里 std 的自由度：0 → N（当前默认）| 1 → N−1（历史默认，用于精确复现旧 run）
+  pa_std_correction: 0
   # 是否先把掩码减去空间均值（使增益均值=1，初始不改变特征尺度）。默认开。
   pa_mul_center: true
   # γ 的 logit 初值：-10 → γ≈4.5e-5（初始恒等）；0 → γ=0.5（一开始就起作用）

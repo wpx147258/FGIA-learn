@@ -48,7 +48,8 @@ class PartAttention(nn.Module):
                  detach_feat: bool = False, perm_path: str = "", kernel: int = 1,
                  js_w: float = 0.0, js_target: float = 0.35,
                  mul: bool = False, mul_center: bool = True, mul_gate: float = -10.0,
-                 mask_blur: bool = False, readout: str = "mean"):
+                 mask_blur: bool = False, readout: str = "mean",
+                 std_correction: int = 0):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -91,6 +92,11 @@ class PartAttention(nn.Module):
         if readout not in ("mean", "cls"):
             raise ValueError(f"pa_readout 只能是 mean | cls，收到 {readout!r}")
         self.readout = readout
+        # norm_spatial 里 std 的分母自由度：0 → N（当前默认），1 → N−1（历史默认）。
+        # 2026-10-29 03:25 的审计把它从 torch 默认的 1 改成了 0，等于把检测器分数整体
+        # 缩放 0.26%。这个开关是为了**精确复现历史 run**（原 pa4_js 用的是 correction=1，
+        # 即 N−1=195），不是调参项。
+        self.std_correction = int(std_correction)
         self.mul = bool(mul)
         # mul_center：先把每张掩码减去自己的空间均值，使 Σ_k m 的均值为 0、
         # 增益 1+Σm 的均值为 1（初始平均不改尺度）。不居中时 K 张 sigmoid 掩码
@@ -180,7 +186,7 @@ class PartAttention(nn.Module):
         # 直接套 hinge 会永远落在 margin 下方、等于没加正则。
         raw = self.det(feat).flatten(2)                  # [B,K,N]
         if self.norm_spatial:
-            raw = (raw - raw.mean(dim=-1, keepdim=True)) / raw.std(dim=-1, keepdim=True, correction=0).clamp_min(1e-5)
+            raw = (raw - raw.mean(dim=-1, keepdim=True)) / raw.std(dim=-1, keepdim=True, correction=self.std_correction).clamp_min(1e-5)
         if self.compete:
             logits = raw / self.tau
             A = logits.softmax(dim=1)                    # 每个位置在 K 个部件间竞争
@@ -271,7 +277,7 @@ class PartAttention(nn.Module):
         b, k, h, w = raw.shape
         raw = raw.flatten(2)
         if self.norm_spatial:
-            raw = (raw - raw.mean(dim=-1, keepdim=True)) / raw.std(dim=-1, keepdim=True, correction=0).clamp_min(1e-5)
+            raw = (raw - raw.mean(dim=-1, keepdim=True)) / raw.std(dim=-1, keepdim=True, correction=self.std_correction).clamp_min(1e-5)
         if self.compete:
             m = (raw / self.tau).softmax(dim=1)
         else:
@@ -390,6 +396,7 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         mul_gate=float(mcfg.get("pa_mul_gate", -10.0)),
         mask_blur=bool(mcfg.get("pa_mask_blur", False)),
         readout=str(mcfg.get("pa_readout", "mean")),
+        std_correction=int(mcfg.get("pa_std_correction", 0)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),
