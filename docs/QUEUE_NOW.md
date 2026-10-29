@@ -51,35 +51,31 @@ best/last/f0.5/f0.6/f0.7 = 84.73/89.07/89.02/89.01/88.95，**五个完全相同*
 - 「邻居相关 0.27→0.66 但 test 不动」这条因果**从来没被测过**（探针测的是模型没用过的掩码）；
 - 真正测平滑的是 chain_gap G3 的 `all_pa4js_blur_v2`（修复后的代码）。
 
-## 3. 正在跑
+## 3. 正在跑（2026-10-30 02:45）
 
 | 位置 | 实验 | 批次 | 动机 |
 |---|---|---|---|
-| 远程 GPU0–2 | `all_pa4_cls` / `all_pa4js_cls` / `all_sig_cls` | `chain_cls.sh` | PA 的 CLS 读出（历史只有 mean） |
-| 本地 3090 | `r50_pa4js_repro2` | `queue_pa4js_repro_test.sh` | 同机同码同种子的可复现性测试 |
-| 本地 3090（排队） | `r50_all_base_s1` | `queue_all_base_s1.sh` | **同代码的第二粒全训基线** |
+| 远程 GPU0–2 | `all_pa4k16` / `all_pa4k8_s7` / `all_pa4k8_l3` | `chain_pa.sh` | K 往上、89.79 的第二粒、layer3 |
+| 远程 GPU3 | `all_parand8` | 手动（02:29 重启） | **固定随机掩码对照**：掩码到底学到东西没有 |
+| 本地 3090 | `pa4js_repro2` / `e75m2_s7`（ep41） | — | 可复现性测试 / 长训练 |
+| 本地排队 | `all_base_s1` → `all_pa4k8_s1` | `queue_all_base_s1.sh`、`queue_local_pa4k8_s1.sh` | 同机同 SEED=1 的基线 vs PA 单变量对照 |
 
 ## 4. 之后自动接的批次（远程，已挂链）
 
-| 顺序 | 脚本 | 四格 | 目的 |
-|---|---|---|---|
-| 下一批 | `chain_pa.sh` | `parand8` / `pa4k16` / `pa4k8_s7` / `pa4k8_l3` | **PA 调优批**（见下） |
-| 再下一批 | `chain_long.sh` | `all_e75` / `all_e75_m2` / `all_e100` / `all_attnpcls_e75` | 全训 + 更长训练（破 90 的主押注） |
-| 再下 | `chain_gap.sh` | G1/G2/G3 共 12 格 | 补齐缺口；G3 含 `pa4js_blur_v2` |
-| 最后 | `chain_true_repro.sh` | `r50_pa4js_c1` | std 分母 195 的精确复现 |
+`chain_pa → chain_long → chain_gap → chain_true_repro → chain_restore`
 
-链路：`chain_cls → chain_pa → chain_long → chain_gap → chain_true_repro`。
-
-### PA 调优批的四格（2026-10-30 02:05 重排）
-
-全部围绕最好配置 **K=8 / compete / 无 JS**：
-
-| GPU | 实验 | 目的 |
+| 顺序 | 脚本 | 内容 |
 |---|---|---|
-| 0 | `all_parand8` | **固定随机掩码对照**（不学习）。若 ≈89.75，说明空间结构没被学到，PA 调参可以停 |
-| 1 | `all_pa4k16` | K 的趋势 4→8 是 +0.17，继续往上 |
-| 2 | `all_pa4k8_s7` | 89.75 的第二粒（单粒 +0.14 不能算增益） |
-| 3 | `all_pa4k8_l3` | 检测器放到 layer3（28×28）：探针显示 layer4 空间同质 |
+| 下一批 | `chain_long.sh` | `all_e75` / `all_e75_m2` / `all_e100` / `all_attnpcls_e75`（破 90 主押注） |
+| 再下 | `chain_gap.sh` | 12 格缺口：t49 / attnp_d0 / pa4k8_cls / **pa4k8_ent1** / **pa4k8_ent3** / aux1 / pos / dim512 / heads8 / div03 / div30 / pa4js_blur_v2 |
+| 再下 | `chain_true_repro.sh` | `r50_pa4js_c1`（std 分母 195 的精确复现） |
+| 最后 | `chain_restore.sh` | **补回被重排换下的五格**：tau005 / tau02 / sigk8 / sigk8_blur / pa4js_l3，外加 k2 与 `attnp_mean` |
+
+### 为什么要 chain_restore
+
+前面几轮重排（把 chain_pa 插到 chain_long 前、用熵上限替换 τ 扫描、本地 k2 换成基线复现）
+换下来 5 个已经排好的实验。这些不是失败，只是被我挪走了——现在原样补回到整条链的最后，
+一格都不丢，也不会打乱已经在跑的批次。
 
 ## 5. 机制诊断（仍然有效的那部分）
 
