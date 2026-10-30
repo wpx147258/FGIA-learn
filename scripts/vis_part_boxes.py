@@ -41,6 +41,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", required=True)
     ap.add_argument("--n", type=int, default=6, help="画几张图")
+    ap.add_argument("--stride", action="store_true",
+                    help="在整个 test 集上等距取样（默认取前 n 张，同类）")
     ap.add_argument("--mass", type=float, default=0.8, help="框内要包含的掩码质量比例")
     ap.add_argument("--out", default="figs/part_boxes.png")
     a = ap.parse_args()
@@ -68,7 +70,15 @@ def main():
     ds = CUBDataset(data_root=root, split="test",
                     transform=build_transform(data_cfg, img_size, train=False),
                     num_classes=dcfg["num_classes"])
-    dl = DataLoader(ds, batch_size=a.n, shuffle=False, num_workers=2)
+    from torch.utils.data import Subset
+    if a.stride:
+        # 默认取前 n 张会全落在同一类（test 按类排序），等距取样才能看到不同鸟
+        idxs = np.linspace(0, len(ds) - 1, a.n).astype(int).tolist()
+        dl = DataLoader(Subset(ds, idxs), batch_size=a.n, shuffle=False, num_workers=2)
+        pick = idxs
+    else:
+        dl = DataLoader(ds, batch_size=a.n, shuffle=False, num_workers=2)
+        pick = list(range(a.n))
 
     batch = next(iter(dl))
     x = batch["image"].to(dev)
@@ -103,8 +113,7 @@ def main():
     areas_all = []
 
     for bi in range(B):
-        idx = bi
-        rel = ds.data_ids[idx] if hasattr(ds, "data_ids") else None
+        idx = pick[bi]
         fname = ds.imgs_paths[ds.data_ids[idx]]
         img = Image.open(root / "images" / fname).convert("RGB") if fname else None
         ax = axes[bi // ((a.n + 1) // 2)][bi % ((a.n + 1) // 2)]
@@ -129,7 +138,7 @@ def main():
                                    edgecolor=colors[k], lw=2))
             ax.text(x0, max(y0 - 4, 8), f"P{k+1} {area*100:.0f}%", color=colors[k],
                     fontsize=8, weight="bold")
-        ax.set_title(f"{fname}", fontsize=8)
+        ax.set_title(Path(str(fname)).name.replace(".jpg", ""), fontsize=7)
         ax.axis("off")
 
     for j in range(B, axes.size):
