@@ -337,15 +337,19 @@ class PartAttention(nn.Module):
 
         # 反重复：只罚"几乎一模一样"的部件对，部分重叠放行
         if self.dup_w > 0 and self.num_parts > 1:
-            # ⚠️ 必须用**不中心化**的余弦：中心化会减掉"整幅都在轻度激活"这个公共分量，
-            # 结果两张几乎均匀、几乎一样的掩码，中心化后相似度反而很低——反重复项根本
-            # 不触发（实测 compete=false 时 uncentered=0.967 而 hinge 罚项为 0）。
-            # 不中心化 + 高阈值（0.9）：两块紧凑团块即便部分重叠也只有 0.7 左右，
-            # 只有真正"同一张掩码"才会越过阈值，正好符合"允许重叠、禁止重复"。
-            af = a / a.norm(dim=-1, keepdim=True).clamp_min(1e-9)
-            sim = torch.einsum("bkn,bmn->bkm", af, af)
+            # 判据用**软 IoU**（sum min / sum max），不用余弦。
+            # 原因：两块"都覆盖鸟、但侧重不同部位"的掩码，余弦天然就有 0.7~0.8——
+            # 按用户的要求（眼睛和头部本来就重叠）这**不该被罚**；
+            # 而余弦对"几乎一样的两块"和"大面积重叠的两块"区分不开。
+            # IoU 才对应"面积意义上重叠多少"：真实部位之间 0.4~0.6 很正常，
+            # 只有 >0.9（形状几乎相同）才是退化，需要罚。
+            m1 = a[:, :, None, :]                             # [B,K,1,N]
+            m2 = a[:, None, :, :]                             # [B,1,K,N]
+            inter = torch.minimum(m1, m2).sum(-1)
+            union = torch.maximum(m1, m2).sum(-1)
+            iou = inter / union.clamp_min(1e-9)
             off = 1.0 - torch.eye(self.num_parts, device=a.device)
-            worst = (sim * off).max(dim=2).values            # 每个部件最像的那个邻居
+            worst = (iou * off).max(dim=2).values             # 与最像邻居的 IoU
             self._last_dup = (self.dup_w * (worst - self.dup_thr).clamp_min(0.0)).mean()
         else:
             self._last_dup = None
