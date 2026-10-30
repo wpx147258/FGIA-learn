@@ -24,6 +24,7 @@ class ClassificationCriterion(nn.Module):
                  hard_label_aux: tuple[str, ...] = (),
                  consistency_w: float = 0.0, consistency_T: float = 2.0,
                  consistency2_w: float = 0.0,
+                 consistency3_w: float = 0.0,
                  pair_w: float = 0.0, pair_eps: float = 0.05,
                  pair_rank_w: float = 1.0, hard_neg_k: int = 0,
                  entropy_w: float = 0.0, main_w: float = 1.0, strong_ce: float = 0.0,
@@ -76,6 +77,7 @@ class ClassificationCriterion(nn.Module):
         self.consistency_w = float(consistency_w)
         # 第二视图（更大外扩的裁剪）与主分支的一致性，独立权重
         self.consistency2_w = float(consistency2_w)
+        self.consistency3_w = float(consistency3_w)
         self.consistency_T = float(consistency_T)
         # 这些辅助分支用**硬标签**而不是 mixup 的 soft_target。
         # 理由：裁剪分支切的是「A 最显著的那块」，那块区域可能是纯 A 的像素
@@ -247,6 +249,13 @@ class ClassificationCriterion(nn.Module):
             kl = ((m.exp() * (m - c)).sum(1) + (c.exp() * (c - m)).sum(1)).mean() * 0.5
             loss = loss + self.consistency2_w * kl * T * T
             logs["consistency2"] = float(kl.detach())
+        if self.consistency3_w > 0 and "logits_crop3" in out:
+            T = self.consistency_T
+            m = F.log_softmax(out["logits"].float() / T, dim=1)
+            c = F.log_softmax(out["logits_crop3"].float() / T, dim=1)
+            kl = ((m.exp() * (m - c)).sum(1) + (c.exp() * (c - m)).sum(1)).mean() * 0.5
+            loss = loss + self.consistency3_w * kl * T * T
+            logs["consistency3"] = float(kl.detach())
 
         # 知识蒸馏：学生（主分支）追教师的软化分布
         if self.distill_w > 0 and "teacher_logits" in batch:
@@ -376,6 +385,7 @@ def build_criterion(cfg: dict) -> nn.Module:
         consistency_w=t.get("cam_consistency", 0.0),
         consistency_T=t.get("cam_consistency_T", 2.0),
         consistency2_w=t.get("cam_consistency2", 0.0),
+        consistency3_w=t.get("cam_consistency3", 0.0),
         pair_w=t.get("pair_w", 0.0),
         pair_eps=t.get("pair_eps", 0.05),
         pair_rank_w=t.get("pair_rank_w", 1.0),

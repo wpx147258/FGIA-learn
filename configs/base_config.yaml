@@ -441,6 +441,8 @@ TRAIN:
   # 只和主分支做一致性、不接标签。留空 = 关闭；权重 0 = 只算不用。
   cam_margin2:
   cam_consistency2: 0.0
+  cam_margin3: null
+  cam_consistency3: 0.0
   # 一致性教师视图的来源：
   #   cam     = 用当前模型的 CAM 框裁出来的局部（默认，自洽但带噪声）
   #   gt_head = 用 CUB 关键点裁出的头部图（**只用于训练**，测试完全不碰标注）

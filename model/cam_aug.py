@@ -217,6 +217,7 @@ class CamAux:
                  drop_strength: float = 1.0, crop_union: bool = False,
                  margin_union: float | None = None, crop_majority: bool = False,
                  quad_p: float = 1.0, margin2: float | None = None,
+                 margin3: float | None = None,
                  teacher: str = "cam", part_views: tuple = ()):
         self.drop_w = float(drop_w)
         self.crop_w = float(crop_w)
@@ -249,6 +250,7 @@ class CamAux:
         # 多视图一致性：同一个 CAM 框、用**另一个外扩倍数**再裁一张（默认 1.6），
         # 只用于和主分支做一致性，不直接接标签监督。None = 关闭。
         self.margin2 = None if margin2 is None else float(margin2)
+        self.margin3 = None if margin3 is None else float(margin3)
         # 一致性教师视图的来源：cam = CAM 框裁出来的局部（默认）；
         # gt_head = 数据集按关键点裁好的头部图（来自 batch["head"]）。
         # 换成 GT 是干净的对照：一致性机制不变，只换教师视图怎么来。
@@ -326,6 +328,13 @@ class CamAux:
                 # 第三个视角：同一个框、更大外扩。只进一致性损失，不接 CE。
                 out["logits_crop2"] = model(
                     crop_and_resize(x, boxes, self.out_size, self.margin2))
+            if self.margin3 is not None and boxes is not None:
+                # 第四个视角（2026-10-30 新增）：第三个尺度。
+                # 依据：双尺度一致性是唯一被验证有效的成分（+0.36，四对配对 p=0.015），
+                # 而两个尺度值（1.3 / 1.6）从来没扫过第三个。多一个尺度能让一致性约束
+                # 跨越更大的尺度范围，是这条已验证机制最直接的延伸。
+                out["logits_crop3"] = model(
+                    crop_and_resize(x, boxes, self.out_size, self.margin3))
         if self.part_views and batch is not None:
             for name in self.part_views:
                 key = "logits_" + name
@@ -356,6 +365,7 @@ def build_cam_aux(tcfg: dict, image_size: int) -> CamAux | None:
         crop_majority=tcfg.get("cam_crop_majority", False),
         quad_p=tcfg.get("cam_quad_p", 1.0),
         margin2=tcfg.get("cam_margin2"),
+        margin3=tcfg.get("cam_margin3"),
         teacher=tcfg.get("cam_teacher", "cam"),
         part_views=tuple(v.strip() for v in str(tcfg.get("cam_part_views") or "").split(",")
                          if v.strip()),

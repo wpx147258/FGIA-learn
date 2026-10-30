@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
-# 本机：75 轮 + 双尺度一致性，**SEED=1**。
-#
-# 为什么要这一格：本地 SEED=7 上 e75m2_s7 对同机同种子基线是 **+0.62（p=0.02，显著）**，
-# 但远程 SEED=42 的同配置只有 +0.09（p=0.78）。观察到的规律是
-# "e75m2 在两台机器两个种子上都落在 89.68，而基线在 89.07~89.94 之间跳"——
-# 更像是**方差压缩**而不是增益。本地已有 base_s1=89.26，
-# 这一格给出第二对同机同种子对照，直接判定上面两种解释哪个成立。
+# 2026-10-30：e75m2 的第三对同机同种子配对（SEED=2）。
+# 为什么是这一格：今天最贵的一课是"单粒比较没有分辨力"——
+# 同一个 τ 改动在 S42 上 −0.67、在 S1 上 +0.21。
+# 而 e75m2 是唯一有多对配对支撑的正结果（四对、合并 p=0.015）。
+# 本机已有 base_s2 = 89.42，补这一格就凑成第三对本地配对。
 set -u
 cd "$(dirname "$0")/.." || exit 1
 PY=/home/wpx/anaconda3/bin/python
 export HF_ENDPOINT=https://hf-mirror.com
 LOG=logs/queue_r50_90.log
-echo "[$(date '+%F %T')] queue_local_e75m2_s2 等待 base_s2 结束 ..." >> "$LOG"
-until grep -qs "queue_local_base_s2 结束" "$LOG"; do sleep 30; done
 BASE=(
   --config configs/baseline_config.yaml --set
   DATASET.image_size=448 TRAIN.epochs=75 TRAIN.batch_size=16
