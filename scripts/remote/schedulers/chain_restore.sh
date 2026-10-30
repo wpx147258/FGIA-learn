@@ -15,7 +15,8 @@ export HF_ENDPOINT=https://hf-mirror.com
 PY=/root/miniconda3/bin/python
 LOG=/root/chain_restore.log
 # 先让位给新实验批（chain_res：分辨率 + CAM 强度），补回的老实验排在它们之后
-for _ in $(seq 1 900); do grep -q "CHAIN_RES_DONE" /root/chain_res.log 2>/dev/null && break; sleep 60; done
+# 重编码两格（chain_rerank）排在这里之前——它是最后一个真正的机制假设，优先于补回实验
+for _ in $(seq 1 900); do grep -q "CHAIN_RR_DONE" /root/chain_rerank.log 2>/dev/null && break; sleep 60; done
 echo "[$(date '+%F %T')] 前置链路全部结束，开始补回被换下的实验" >> "$LOG"
 
 BASE="--config configs/baseline_config.yaml --set DATASET.image_size=448 TRAIN.epochs=50 TRAIN.batch_size=16 TRAIN.mixup=0.2 TRAIN.cutmix=1.0 TRAIN.mixup_p=0.7 TRAIN.label_smoothing=0.05 TRAIN.cam_crop=0.2 TRAIN.cam_alpha_crop=0.2 TRAIN.cam_margin=1.3 TRAIN.cam_consistency=0.3 TRAIN.cam_consistency_T=2.0 TRAIN.backbone_lr_layers.stem=0.01 TRAIN.backbone_lr_layers.layer1=0.01 TRAIN.backbone_lr_layers.layer2=0.03 TRAIN.backbone_lr_layers.layer3=0.05 TRAIN.backbone_lr_layers.layer4=0.05 TRAIN.lr=1.0e-3 MODEL.name=resnet50.fb_swsl_ig1b_ft_in1k MODEL.dropout=0.1 TRAIN.swa_start_frac=[0.5,0.6,0.7] DATASET.train_on_val=true"
