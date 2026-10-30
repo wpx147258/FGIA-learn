@@ -361,7 +361,18 @@ class Classifier(nn.Module):
             fused = fused + self.pr_cam_beta * lg_c
         if not self.training:
             return fused
-        return {"logits": fused, "logits_pa": self.part_head(pp), "pa_div": div}
+        out = {"logits": fused, "logits_pa": self.part_head(pp), "pa_div": div}
+        # ⚠️ 2026-10-30 修复：part_rerank 走的是这条独立前向，之前没把 PA 的几个正则项
+        # （熵上限 / 紧致 / 反重复 / 边界）接进 out，导致开了 part_rerank 时它们全部静默失效——
+        # 实测 `rr_pa4k8` 与 `rr_pa4k8_ent` 两格训练日志逐位相同、五个权重结果也完全相同。
+        _pa = getattr(self.backbone, "part_attn", None)
+        if _pa is not None:
+            for _key, _attr in (("pa_ent", "_last_ent_hinge"), ("pa_compact", "_last_compact"),
+                                ("pa_dup", "_last_dup"), ("pa_border", "_last_border")):
+                _v = getattr(_pa, _attr, None)
+                if _v is not None:
+                    out[_key] = _v
+        return out
 
     def _forward_cam_fuse(self, x: torch.Tensor) -> torch.Tensor:
         """测试路径：整图 + CAM 框放大两路，按学到的 β 融合。两次前向。
