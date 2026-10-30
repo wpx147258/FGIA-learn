@@ -46,6 +46,9 @@ echo "=== R1：分辨率 512 两格 ===" >> "$LOG"
 # 分辨率两格已在 03:55 的窗口里提前跑完（见 /root/launch_r512.sh），这里只评测
 # CAM 强度两格（cam035 / cons06）已在 03:22 的评测窗口里提前跑完，这里只跑分辨率两格
 waitnames "EXP_NAME=(r50_all_r512_base|r50_all_r512_pa4k8)$"
-evalbatch r50_all_cam035 r50_all_cons06 r50_all_r512_base r50_all_r512_pa4k8
+# 这四格的 5 个权重 dump 已经在 03:22 / 04:32 补评过（cam035、cons06 用 GPU1/3，
+# r512 两格用 eval_r512.sh），这里再评一遍只是覆盖同样的文件、白烧 40 分钟 GPU。
+# 只保留 cleanup：它自带"5 个 dump 齐了才删"的保护。
+echo "[$(date '+%F %T')] 四格已评过，跳过重复评测，只做清理" >> "$LOG"
 cleanup    r50_all_cam035 r50_all_cons06 r50_all_r512_base r50_all_r512_pa4k8
 echo "[$(date '+%F %T')] CHAIN_RES_DONE" >> "$LOG"
