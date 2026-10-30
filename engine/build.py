@@ -498,7 +498,7 @@ def build_optimizer(model: nn.Module, cfg: dict) -> torch.optim.Optimizer:
         # 它们都是随机初始化的新参数，所以给头部的学习率（1.0）。
         for attr in ("fpn", "attn_aux", "pair_aux", "pmg", "deep_sup", "attn_pool", "se_gate",
                      "tokenlearner", "part_fusion", "part_head", "hyp_comb", "mge",
-                     "region_router"):
+                     "region_router", "extra_branch"):
             aux = getattr(model, attr, None)
             if aux is not None:
                 m_scale = 1.0
