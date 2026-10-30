@@ -11,6 +11,7 @@ from model.global_ctx import build_global_context
 from model.mge import build_mge
 from model.regions import RegionRouter, propose_regions, routing_features
 from model.part_attn import build_part_attention
+from model.extra import ExtraBranch
 from model.head import HEADS
 from model.pair import PairAux
 from model.attn_pool import AttnPool, SEGate, TokenLearner
@@ -31,6 +32,7 @@ class Classifier(nn.Module):
                  attn_pool: nn.Module | None = None, attn_from: str = "layer4",
                  se_gate: nn.Module | None = None,
                  tokenlearner: nn.Module | None = None,
+                 extra_branch: nn.Module | None = None,
                  cam_fuse: bool = False, cam_fuse_regions: int = 1, cam_gate_area: float = 0.0,
                  part_rerank: bool = False, pr_margin: float = 1.3,
                  pr_alpha: float = 0.2, pr_size: int = 448, pr_parts: int = 0,
@@ -188,6 +190,8 @@ class Classifier(nn.Module):
         self.se_gate = se_gate
         # 软空间注意力池化（TokenLearner）：输出与 GAP 同维相加，零初始化
         self.tokenlearner = tokenlearner
+        # 参数匹配的「额外加性通路」控制臂（见 model/extra.py）
+        self.extra_branch = extra_branch
         self.tl_replace = bool(getattr(tokenlearner, "replace", False))
         # 与 GAP 拼接：pooled = [GAP ; TokenLearner 输出]，头输入 2C
         self.tl_cat_gap = bool(getattr(tokenlearner, "cat_gap", False))
@@ -663,6 +667,9 @@ class Classifier(nn.Module):
                 pooled = torch.cat([pooled, self.attn_pool(src)], dim=1)
             else:
                 pooled = pooled + self.attn_pool(src)
+        if self.extra_branch is not None:
+            # 参数匹配的加性通路控制臂（见 model/extra.py）
+            pooled = self.extra_branch(pooled)
         if self.tokenlearner is not None:
             tl_out = self.tokenlearner(feat)
             if self.tl_cat_gap:
@@ -928,6 +935,9 @@ def build_model(cfg: dict) -> Classifier:
             cat_gap=bool(mcfg.get("tl_cat_gap", False)))
 
     attn_pool = None
+    extra_branch = None
+    if mcfg.get("extra_branch", False):
+        extra_branch = ExtraBranch(int(feat_dim), int(mcfg.get("extra_hidden", 256)))
     if mcfg.get("attn_pool", False):
         # 兼容性断言：这几种组合要么训练/推理不同源，要么会静默忽略模块
         if mcfg.get("pmg", False) or fpn is not None or fusion == "head_body":
@@ -991,7 +1001,7 @@ def build_model(cfg: dict) -> Classifier:
     freeze = bool(mcfg.get("freeze_backbone", False))
     return Classifier(backbone, head, cam_aux, attn_aux, fpn, fusion, pair_aux, pmg,
                       deep_sup, attn_pool, str(mcfg.get("attn_from", "layer4")), se_gate,
-                      tokenlearner, cam_fuse=cam_fuse,
+                      tokenlearner, extra_branch=extra_branch, cam_fuse=cam_fuse,
                       cam_fuse_regions=cam_fuse_regions,
                       cam_gate_area=float(mcfg.get("cam_gate_area", 0.0)),
                       part_rerank=part_rerank,

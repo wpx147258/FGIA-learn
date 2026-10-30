@@ -311,6 +311,10 @@ MODEL:
     # backbone 的随机深度。作用在 15 个残差块上，是真正有分量的正则。
     # a1 预训练时用的是 0.05。
     drop_path_rate: 0.0
+  # 参数匹配的「额外加性通路」控制臂：pooled + MLP(pooled)，输出零初始化。
+  # 用来检验「部件注意力的收益是否只是多了一条参数化加性通路」。
+  extra_branch: false
+  extra_hidden: 256
 
 TRAIN:
   batch_size: 32
