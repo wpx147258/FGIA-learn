@@ -216,6 +216,9 @@ class PartAttention(nn.Module):
         self.border_w = float(border_w)
         self.border_b = int(border_b)
         self._last_border: torch.Tensor | None = None
+        # 乘性出口的门控值（sigmoid(mul_gate)）。如果训练中它一直贴在初值附近，
+        # 说明分类目标不需要空间重加权——这是"掩码进不了决策"的决定性读数。
+        self._last_gamma = None
         self._last_ent_target = float(ent_target)
         # 给分类头用的部件描述子（[B,K,C]）和可微的散度项，训练时由 Classifier 取走
         self._last_z: torch.Tensor | None = None
@@ -439,7 +442,8 @@ class PartAttention(nn.Module):
                 w = (m * self.mul_pw.view(1, -1, 1, 1)).sum(dim=1, keepdim=True)
             else:
                 w = m.sum(dim=1, keepdim=True)                   # [B,1,h,w]
-            g = torch.sigmoid(self.mul_gate)                     # 初始≈4.5e-5
+            g = torch.sigmoid(self.mul_gate)
+            self._last_gamma = float(g.detach())                     # 初始≈4.5e-5
             self._last_res = (g * w).detach()
             return output * (1.0 + g * w)
         y = self.forward(output)

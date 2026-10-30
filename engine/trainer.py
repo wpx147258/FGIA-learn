@@ -467,7 +467,7 @@ def train_one_epoch(model, train_loader, optimizer, criterion, device, epoch, *,
         if getattr(pa, "out", None) is not None:
             out["pa_out_w"] = float(pa.out.weight.detach().norm())
         for attr, key in (("_last_entropy", "pa_entropy"), ("_last_overlap", "pa_overlap"),
-                          ("_last_ratio", "pa_ratio")):
+                          ("_last_ratio", "pa_ratio"), ("_last_gamma", "pa_mul_gamma")):
             v = getattr(pa, attr, None)
             if v is not None:
                 out[key] = float(v)
