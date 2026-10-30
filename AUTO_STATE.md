@@ -352,3 +352,8 @@
          pa4k8_noreg（div=0/aux=0/js=0，裸模块）、pa4k8_div0（只去散度）、
          pa4k8_aux0（只去逐部件 CE）、pa4_noreg（K=4 全关）。
        链路：gap → stack → noreg → true_repro → res → rerank → restore。
+[10:15] G4 出分：`nocam` 88.89 → `pa4k8_nocam` **89.35（+0.46，p=0.105）**，
+       而 CAM 开着时 PA 只有 +0.12 ⇒ **部件注意力与 CAM 部分冗余**（都在做"局部收拢+给证据"）。
+       但 `nocam+PA` 仍低于完整基线 89.63 ⇒ PA 替代不了 CAM，只补回一部分。
+       乘性出口 −0.15（p=0.59）⇒ 出口形态不是关键；aux1（部件 CE 1.0）−0.52（p=0.061）⇒ 强行部件独立分类有害。
+[10:16] 叠加批四格已启动，config 逐项核对（SEED=42 / 75轮 / cam_margin2 1.6 / cons2 0.15 / 模块开关正确）。
