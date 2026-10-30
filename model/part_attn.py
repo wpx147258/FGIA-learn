@@ -332,8 +332,12 @@ class PartAttention(nn.Module):
 
         # 反重复：只罚"几乎一模一样"的部件对，部分重叠放行
         if self.dup_w > 0 and self.num_parts > 1:
-            af = a - a.mean(dim=-1, keepdim=True)
-            af = af / af.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+            # ⚠️ 必须用**不中心化**的余弦：中心化会减掉"整幅都在轻度激活"这个公共分量，
+            # 结果两张几乎均匀、几乎一样的掩码，中心化后相似度反而很低——反重复项根本
+            # 不触发（实测 compete=false 时 uncentered=0.967 而 hinge 罚项为 0）。
+            # 不中心化 + 高阈值（0.9）：两块紧凑团块即便部分重叠也只有 0.7 左右，
+            # 只有真正"同一张掩码"才会越过阈值，正好符合"允许重叠、禁止重复"。
+            af = a / a.norm(dim=-1, keepdim=True).clamp_min(1e-9)
             sim = torch.einsum("bkn,bmn->bkm", af, af)
             off = 1.0 - torch.eye(self.num_parts, device=a.device)
             worst = (sim * off).max(dim=2).values            # 每个部件最像的那个邻居
@@ -523,7 +527,7 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         ent_ramp=float(mcfg.get("pa_ent_ramp", 0.0)),
         compact_w=float(mcfg.get("pa_compact_w", 0.0)),
         dup_w=float(mcfg.get("pa_dup_w", 0.0)),
-        dup_thr=float(mcfg.get("pa_dup_thr", 0.8)),
+        dup_thr=float(mcfg.get("pa_dup_thr", 0.9)),
         border_w=float(mcfg.get("pa_border_w", 0.0)),
         border_b=int(mcfg.get("pa_border_b", 2)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),

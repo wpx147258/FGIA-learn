@@ -32,7 +32,8 @@ BASE=(
   "TRAIN.swa_start_frac=[0.5, 0.6, 0.7]" DATASET.train_on_val=true
   MODEL.part_attn=true MODEL.pa_from=layer4 MODEL.pa_parts=8 MODEL.pa_grouped=true
   MODEL.pa_compete=false MODEL.pa_norm_spatial=true MODEL.pa_tau=0.1
-  MODEL.pa_compact_w=0.5 MODEL.pa_dup_w=0.5 MODEL.pa_dup_thr=0.8
+  MODEL.pa_compact_w=0.5 MODEL.pa_dup_w=1.0 MODEL.pa_dup_thr=0.9
+  MODEL.pa_border_w=1.0
   TRAIN.pa_div_w=0.0 TRAIN.pa_aux_w=0.5 TRAIN.pa_lr=5.0e-4
 )
 name=r50_all_pa4k8_ovl05_s1
