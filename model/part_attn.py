@@ -52,7 +52,8 @@ class PartAttention(nn.Module):
                  std_correction: int = 0, random_masks: bool = False,
                  ent_target: float = 0.0, ent_w: float = 0.0, ent_ramp: float = 0.0,
                  compact_w: float = 0.0,
-                 dup_w: float = 0.0, dup_thr: float = 0.8):
+                 dup_w: float = 0.0, dup_thr: float = 0.8,
+                 border_w: float = 0.0, border_b: int = 2):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -207,6 +208,14 @@ class PartAttention(nn.Module):
         self.dup_w = float(dup_w)
         self.dup_thr = float(dup_thr)
         self._last_dup: torch.Tensor | None = None
+        # 边界惩罚（2026-10-30，由紧致项的可视化发现）：只加"紧致"而不加"别贴边"时，
+        # 掩码会收敛成**贴着图边的一大块**——因为任意的紧凑团块都能满足方差小，
+        # 而图像边缘恰好是检测器响应最强、最容易形成团块的地方（实测最左列主导度 1.32×）。
+        # 结果框面积是小了，但框全跑到了画框边缘、离开鸟。
+        # 这里直接罚外圈 border_b 圈格子里的掩码质量。
+        self.border_w = float(border_w)
+        self.border_b = int(border_b)
+        self._last_border: torch.Tensor | None = None
         self._last_ent_target = float(ent_target)
         # 给分类头用的部件描述子（[B,K,C]）和可微的散度项，训练时由 Classifier 取走
         self._last_z: torch.Tensor | None = None
@@ -310,6 +319,17 @@ class PartAttention(nn.Module):
 
         # 熵上限：只罚「太分散」（hinge），目标以 nats 计（上限 = ln(N)，14×14 时 5.28）。
         # 与 _last_div 分开累加，这样日志里能看出到底是散度项在动还是熵项在动。
+        # 边界惩罚：把质量从图像外圈赶走
+        if self.border_w > 0:
+            b = min(self.border_b, h // 2, w // 2)
+            ring = torch.ones(h, w, device=a.device, dtype=a.dtype)
+            if b > 0:
+                ring[b:h - b, b:w - b] = 0.0
+            mass = (a * ring.reshape(-1)).sum(-1)          # [B,K]
+            self._last_border = (self.border_w * mass).mean()
+        else:
+            self._last_border = None
+
         # 反重复：只罚"几乎一模一样"的部件对，部分重叠放行
         if self.dup_w > 0 and self.num_parts > 1:
             af = a - a.mean(dim=-1, keepdim=True)
@@ -504,6 +524,8 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         compact_w=float(mcfg.get("pa_compact_w", 0.0)),
         dup_w=float(mcfg.get("pa_dup_w", 0.0)),
         dup_thr=float(mcfg.get("pa_dup_thr", 0.8)),
+        border_w=float(mcfg.get("pa_border_w", 0.0)),
+        border_b=int(mcfg.get("pa_border_b", 2)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),

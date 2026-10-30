@@ -299,6 +299,11 @@ class ClassificationCriterion(nn.Module):
             loss = loss + out["pa_dup"]
             logs["pa_dup"] = float(out["pa_dup"].detach())
 
+        # 边界惩罚：把掩码质量从图像外圈赶走（防止紧凑团块贴在画框边缘）
+        if "pa_border" in out:
+            loss = loss + out["pa_border"]
+            logs["pa_border"] = float(out["pa_border"].detach())
+
         # 熵正则：减号 = 最大化熵，抑制「错得自信」
         if self.entropy_w > 0:
             lg = out["logits"].float()
