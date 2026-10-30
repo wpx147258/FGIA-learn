@@ -346,3 +346,9 @@
        结果叠加批和 G4 抢同一批卡，`e75m2_both` 立刻 OOM。已杀掉三格、清空目录，
        等待条件改成 `CHAIN_GAP_DONE`（G4 训练+评测+清理全部结束），重新挂上。
        教训：批次之间的等待标记必须是"完成"标记，`echo === Gn` 是"开始"标记，两者极易混。
+[10:00] 审计发现：本地 26 个 PartAttention run **没有一个**关过模块正则
+       （div 只有 0.1/1.0/2.0，aux 只有 0.25/0.5/1.0），所以所有 PA 结论都是「模块+正则」打包的。
+       用户要求把"无正则"这格插在叠加批之后 → 建 `chain_noreg.sh` 四格做拆解：
+         pa4k8_noreg（div=0/aux=0/js=0，裸模块）、pa4k8_div0（只去散度）、
+         pa4k8_aux0（只去逐部件 CE）、pa4_noreg（K=4 全关）。
+       链路：gap → stack → noreg → true_repro → res → rerank → restore。
