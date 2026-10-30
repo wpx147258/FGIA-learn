@@ -50,7 +50,9 @@ class PartAttention(nn.Module):
                  mul: bool = False, mul_center: bool = True, mul_gate: float = -10.0,
                  mask_blur: bool = False, readout: str = "mean",
                  std_correction: int = 0, random_masks: bool = False,
-                 ent_target: float = 0.0, ent_w: float = 0.0, ent_ramp: float = 0.0):
+                 ent_target: float = 0.0, ent_w: float = 0.0, ent_ramp: float = 0.0,
+                 compact_w: float = 0.0,
+                 dup_w: float = 0.0, dup_thr: float = 0.8):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -187,6 +189,24 @@ class PartAttention(nn.Module):
         self.ent_ramp = float(ent_ramp)
         self.progress = 0.0
         self._last_ent_hinge: torch.Tensor | None = None
+        # 空间紧致项（2026-10-30 新增，依据掩码可视化）：
+        # 实测 K=8 的部件掩码是**散布全图的碎斑**——每个位置虽然被某个部件独占
+        # （位置主导度 0.50），但每个部件的质量在空间上接近均匀（熵 4.86/5.28），
+        # 于是「累计 80% 质量」的外接框 = 整个 14×14 图 ⇒ 按掩码裁剪等于裁整图，
+        # part_rerank 必然无效、部件 logits 与主分支一致率 95.6%。
+        # 熵上限约束的是"部件之间互斥"，与"部件内部成片"正交，所以压了重叠也没用。
+        # 这里直接罚**空间方差**（对每幅归一化后的掩码算 var_x+var_y）：
+        # 在 [0,1]² 上均匀分布的方差和是 1/6，乘 6 归一化 ⇒ 均匀 = 1.0，紧凑 ≈ 0。
+        self.compact_w = float(compact_w)
+        self._last_compact: torch.Tensor | None = None
+        # 反重复铰链（2026-10-30，用户判断）：真实部位天然重叠——眼睛在头部里、
+        # 翅根连身体——所以**不该用 compete 做硬划分**，也不该用 Dis/Div 把部件推开。
+        # 只有"两个部件几乎是同一张掩码"才是退化的，需要罚。
+        # 做法：对中心化后的掩码算两两余弦相似度，只罚超过 dup_thr 的那部分（hinge），
+        # 阈值以下（部分重叠）完全不惩罚。中心化是为了忽略"整幅都被轻度激活"这个公共分量。
+        self.dup_w = float(dup_w)
+        self.dup_thr = float(dup_thr)
+        self._last_dup: torch.Tensor | None = None
         self._last_ent_target = float(ent_target)
         # 给分类头用的部件描述子（[B,K,C]）和可微的散度项，训练时由 Classifier 取走
         self._last_z: torch.Tensor | None = None
@@ -290,6 +310,30 @@ class PartAttention(nn.Module):
 
         # 熵上限：只罚「太分散」（hinge），目标以 nats 计（上限 = ln(N)，14×14 时 5.28）。
         # 与 _last_div 分开累加，这样日志里能看出到底是散度项在动还是熵项在动。
+        # 反重复：只罚"几乎一模一样"的部件对，部分重叠放行
+        if self.dup_w > 0 and self.num_parts > 1:
+            af = a - a.mean(dim=-1, keepdim=True)
+            af = af / af.norm(dim=-1, keepdim=True).clamp_min(1e-9)
+            sim = torch.einsum("bkn,bmn->bkm", af, af)
+            off = 1.0 - torch.eye(self.num_parts, device=a.device)
+            worst = (sim * off).max(dim=2).values            # 每个部件最像的那个邻居
+            self._last_dup = (self.dup_w * (worst - self.dup_thr).clamp_min(0.0)).mean()
+        else:
+            self._last_dup = None
+
+        # 空间紧致：罚每个部件掩码的空间方差（等效于罚外接框面积）
+        if self.compact_w > 0:
+            gy = (torch.arange(h, device=a.device, dtype=a.dtype) + 0.5) / h
+            gx = (torch.arange(w, device=a.device, dtype=a.dtype) + 0.5) / w
+            yy = gy.view(1, 1, h, 1).expand(a.shape[0], self.num_parts, h, w).reshape(a.shape[0], self.num_parts, -1)
+            xx = gx.view(1, 1, 1, w).expand(a.shape[0], self.num_parts, h, w).reshape(a.shape[0], self.num_parts, -1)
+            my = (a * yy).sum(-1, keepdim=True)
+            mx = (a * xx).sum(-1, keepdim=True)
+            var = (a * (yy - my) ** 2).sum(-1) + (a * (xx - mx) ** 2).sum(-1)   # [B,K]
+            self._last_compact = (self.compact_w * 6.0 * var).mean()            # 均匀 → 1.0
+        else:
+            self._last_compact = None
+
         if self.ent_w > 0:
             ent_a = -(a * a.clamp_min(1e-9).log()).sum(-1)          # [B,K]
             # ⚠️ 符号必须是 (ent − target)：训练把熵往**高**推（实测 3.45→4.86），
@@ -457,6 +501,9 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         ent_target=float(mcfg.get("pa_ent_target", 0.0)),
         ent_w=float(mcfg.get("pa_ent_w", 0.0)),
         ent_ramp=float(mcfg.get("pa_ent_ramp", 0.0)),
+        compact_w=float(mcfg.get("pa_compact_w", 0.0)),
+        dup_w=float(mcfg.get("pa_dup_w", 0.0)),
+        dup_thr=float(mcfg.get("pa_dup_thr", 0.8)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),

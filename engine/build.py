@@ -289,6 +289,16 @@ class ClassificationCriterion(nn.Module):
             loss = loss + out["pa_ent"]
             logs["pa_ent"] = float(out["pa_ent"].detach())
 
+        # 部件掩码的空间紧致项（权重在 MODEL.pa_compact_w，模块内已乘过）
+        if "pa_compact" in out:
+            loss = loss + out["pa_compact"]
+            logs["pa_compact"] = float(out["pa_compact"].detach())
+
+        # 反重复铰链：只罚几乎重复的部件对（部分重叠放行）
+        if "pa_dup" in out:
+            loss = loss + out["pa_dup"]
+            logs["pa_dup"] = float(out["pa_dup"].detach())
+
         # 熵正则：减号 = 最大化熵，抑制「错得自信」
         if self.entropy_w > 0:
             lg = out["logits"].float()

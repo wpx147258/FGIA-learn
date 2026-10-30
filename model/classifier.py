@@ -687,6 +687,10 @@ class Classifier(nn.Module):
         _pa = getattr(self.backbone, "part_attn", None)
         if _pa is not None and getattr(_pa, "_last_ent_hinge", None) is not None:
             out["pa_ent"] = _pa._last_ent_hinge
+        if _pa is not None and getattr(_pa, "_last_compact", None) is not None:
+            out["pa_compact"] = _pa._last_compact
+        if _pa is not None and getattr(_pa, "_last_dup", None) is not None:
+            out["pa_dup"] = _pa._last_dup
         if self.tokenlearner is not None and self.tokenlearner._reg is not None:
             out["tl_reg"] = self.tokenlearner._reg
         if self.training and getattr(self.tokenlearner, "_last_z", None) is not None:
