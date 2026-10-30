@@ -255,7 +255,12 @@ class PartAttention(nn.Module):
             self._last_balance = (self.num_parts * ((mass - 1.0 / self.num_parts) ** 2).sum(-1)).mean()
             m = A / A.sum(-1, keepdim=True).clamp_min(1e-6)
         else:
-            m = torch.sigmoid(raw)                       # 旧路径：每个部件独立 [0,1] 掩码
+            # 旧路径：每个部件独立的 [0,1] 掩码（允许重叠）。
+            # ⚠️ 2026-10-30 修复：原来直接 sigmoid(raw)，而 raw 已被 norm_spatial 标准化，
+            # 输出几乎恒为 0.5 ⇒ K 个掩码全是同一张近均匀图（实测 overlap 0.986、熵 5.19），
+            # 紧致/反重复项都没有可用的梯度。这里同样用 tau 做温度放大（tau 越小越锐），
+            # 让部件之间能分化，同时因为彼此独立、仍然允许重叠。
+            m = torch.sigmoid(raw / self.tau)
         if self.mask_blur:
             # ⚠️ 2026-10-30 修复：这条分支以前只写在 part_masks() 里（只有 mul 路径和探针会调用），
             # 主前向在这里内联重算掩码，于是 pa_mask_blur=true 对训练**完全无效**——
