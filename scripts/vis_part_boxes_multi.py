@@ -88,6 +88,9 @@ def main():
     ap.add_argument("--checkpoint", nargs="+", required=True)
     ap.add_argument("--labels", nargs="+", default=None)
     ap.add_argument("--n", type=int, default=8)
+    ap.add_argument("--frac", type=float, default=0.2,
+                    help="取累计质量 >= frac 的格子做外接框。0.8 会把框撑到整图；"
+                         "0.2 才能看出部件的大小差异")
     ap.add_argument("--out", default="figs/part_boxes_multi.png")
     a = ap.parse_args()
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -106,7 +109,7 @@ def main():
     axes = np.atleast_2d(axes)
     halo = [pe.Stroke(linewidth=2.2, foreground="white"), pe.Normal()]
 
-    print("每个格子：8 个部件的「80% 质量外接框」均值  |  框内 GT 覆盖率均值")
+    print(f"每个格子：8 个部件的「累计 {a.frac*100:.0f}% 质量外接框」均值  |  框内 GT 覆盖率均值")
     for r, (run, lab) in enumerate(zip(runs, labels)):
         ds, root, img_size, crop_pct = run["ds"], run["root"], run["img_size"], run["crop_pct"]
         gts, paths = load_gt(root)
@@ -131,7 +134,7 @@ def main():
                 v = M[k].reshape(-1)
                 o = np.argsort(-v)
                 c = np.cumsum(v[o])
-                n = int(np.searchsorted(c, 0.8 * c[-1]) + 1)
+                n = int(np.searchsorted(c, a.frac * c[-1]) + 1)
                 ys, xs = np.divmod(o[:n], w)
                 x0, y0 = xs.min() / w * img_size, ys.min() / h * img_size
                 x1, y1 = (xs.max() + 1) / w * img_size, (ys.max() + 1) / h * img_size
@@ -150,8 +153,8 @@ def main():
             areas += a_area; covs += a_cov
         print(f"[{lab}] 框面积均值 {np.mean(areas)*100:5.1f}%   框内 GT 覆盖率 {np.mean(covs)*100:5.1f}%")
 
-    fig.suptitle("Part-attention boxes: 8 parts (colored) vs GT bird box (green) — "
-                 "same 8 images, three mechanisms", fontsize=8)
+    fig.suptitle(f"Part-attention boxes (top-{a.frac*100:.0f}% mass per part, colored) vs GT bird box (green) "
+                 f"— same {a.n} images, three mechanisms", fontsize=8)
     plt.tight_layout(rect=(0, 0, 1, 0.97))
     Path(a.out).parent.mkdir(parents=True, exist_ok=True)
     plt.savefig(a.out, dpi=150, bbox_inches="tight")
