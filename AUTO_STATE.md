@@ -428,3 +428,6 @@
 [08:20] 第二轴批次已挂链（/root/chain_reg.sh，等增强批结束自动起）：
        crop_scale 0.35 / 0.65、weight_decay 0.02、drop_path_rate 0.1。
        这些都是 config 里存在但**全训口径从未扫过**的开关。
+[09:20] 第三批已挂链（/root/chain_opt.sh，等第二轴结束后自动起）：
+       TRAIN.lr 5e-4 / 2e-3、label_smoothing 0、cam_alpha_crop 0.3。
+       加上已排的增强四格与 crop_scale/wd/drop_path 四格，共 12 个从未扫过的配置在队列里。
