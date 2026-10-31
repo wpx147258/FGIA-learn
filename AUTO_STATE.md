@@ -417,3 +417,11 @@
        这两批出来后 e75m2 会有 7 对配对（原 5 对 + S3 + S5）。
 [07:00] 报告 `docs/REPORT_V3_ALLTRAIN.md` 已更新到最终结论：
        e75m2 五对配对 p=0.0055 为主结果；部件注意力三层结论（分支被用 / 结构不被用 / 跨训练无净增益）。
+[08:10] 用户提醒"不要说到顶了"——复查后确认**有一整类实验从没做过**：
+       `TRAIN.rand_augment`（RandAugment）与 `TRAIN.random_erasing`（Random Erasing）
+       代码早就实现（dataset/transforms.py），但历史上**每一个 run 都关着**
+       （rand_augment="" 、random_erasing=0.0）。细粒度识别里增强强度是最可靠的杠杆之一。
+       已基于 e75m2 在克隆实例 4 卡上排四格（SEED=42，对 e75m2_s42r=89.68 配对）：
+         ra_geo（只开几何增强）/ ra_re（Random Erasing 0.25）/
+         ra_both（两者）/ ra_color（含颜色类操作——文档警告过可能伤，但从未测过）
+       config 已逐项核对写入正确。
