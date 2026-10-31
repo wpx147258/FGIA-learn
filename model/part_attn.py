@@ -54,7 +54,8 @@ class PartAttention(nn.Module):
                  compact_w: float = 0.0,
                  dup_w: float = 0.0, dup_thr: float = 0.8,
                  border_w: float = 0.0, border_b: int = 2,
-                 top_frac: float = 0.0):
+                 top_frac: float = 0.0,
+                 center_gate: float = 0.0):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -227,6 +228,12 @@ class PartAttention(nn.Module):
         # 这个开关让池化只用那一小块局部区域，把结构真正送进分类器。
         # 对 compete 的硬划分也适用：它只是把每个部件的质量重新集中到自己的峰值区。
         self.top_frac = float(top_frac)
+        # 中心高斯门（2026-10-31）：把部件掩码乘一个居中先验，再逐部件归一化。
+        # 依据：①compete 分区能给出 K_eff≈6.9 的分化，但分区可以落在任意位置（GT 富集 1.03）；
+        # ②单独把"中心先验"乘到掩码上，GT 富集从 1.03 升到 1.29（比 CAM 门 1.08 还高）。
+        # 两者从没组合过。center_gate = 高斯的 sigma²（0 = 关闭）。池化用的是归一化后的 a，
+        # 所以乘常数不改变 compete 的分区结构，只把质量往中心搬。
+        self.center_gate = float(center_gate)
         self._last_ent_target = float(ent_target)
         # 给分类头用的部件描述子（[B,K,C]）和可微的散度项，训练时由 Classifier 取走
         self._last_z: torch.Tensor | None = None
@@ -279,6 +286,13 @@ class PartAttention(nn.Module):
             m = F.avg_pool2d(m.view(b, self.num_parts, h, w),
                              kernel_size=3, stride=1, padding=1).view(b, self.num_parts, h * w)
         a = m / m.sum(dim=-1, keepdim=True).clamp_min(1e-6)   # 归一化后用于池化
+        if self.center_gate > 0:
+            gy = (torch.arange(h, device=a.device, dtype=a.dtype) + 0.5) / h * 2 - 1
+            gx = (torch.arange(w, device=a.device, dtype=a.dtype) + 0.5) / w * 2 - 1
+            gg = torch.exp(-((gy.view(1, 1, h, 1) ** 2 + gx.view(1, 1, 1, w) ** 2) / self.center_gate))
+            a = a.view(b, self.num_parts, h, w) * gg
+            a = a.reshape(b, self.num_parts, -1)
+            a = a / a.sum(dim=-1, keepdim=True).clamp_min(1e-6)
         if self.top_frac > 0:
             # 按每个部件自己的质量分布取前 top_frac，其余置零后再归一化。
             sv, _ = torch.sort(a, dim=-1, descending=True)
@@ -563,6 +577,7 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         border_w=float(mcfg.get("pa_border_w", 0.0)),
         border_b=int(mcfg.get("pa_border_b", 2)),
         top_frac=float(mcfg.get("pa_top_frac", 0.0)),
+        center_gate=float(mcfg.get("pa_center_gate", 0.0)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),
