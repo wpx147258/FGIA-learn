@@ -431,3 +431,10 @@
 [09:20] 第三批已挂链（/root/chain_opt.sh，等第二轴结束后自动起）：
        TRAIN.lr 5e-4 / 2e-3、label_smoothing 0、cam_alpha_crop 0.3。
        加上已排的增强四格与 crop_scale/wd/drop_path 四格，共 12 个从未扫过的配置在队列里。
+[10:55] `e75m2_lr10`（backbone 统一 LR 0.1）= **89.18**，比本机 e75m2 均值 89.59 低 **0.41**
+       ⇒ 分层小学习率是必要条件；要调 backbone LR 只能往**更小**的方向试。
+[10:55] 链条排布：第二轴（cs35/cs65/wd02/dp10，ep31）→ 第三轴（lr5e4/lr2e3/ls0/alpha03）
+       → 第四轴（RE 强度：p=0.10 / 0.40 / RE+crop_scale0.35 / RE+dropout0）。
+       本地：`e75m2_rare_s1` ep26/75 → 之后 `rare_s7`。
+[10:55] 修掉一个排链 bug：用 `pgrep -fc` 计数 + `-eq` 比较，无匹配时 pgrep 返回 "0\n0"，
+       比较失败导致链永久空转。改成 `pgrep -f ... >/dev/null` 的退出码判断。
