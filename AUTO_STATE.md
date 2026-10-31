@@ -451,3 +451,8 @@
        这是今天第一次出现"正向 + 显著负向反向对照"并存的轴（不是平的一片）。
 [12:55] 已挂 chain_reg2（等第三批 lr/ls/alpha 结束）：
        dp20 / cs25 / dp10+cs35 组合 / dp10 的第二粒（S3，对 e75m2_s3c 89.66 配对）。
+[14:20] 第三轴全负/持平：lr2e3 −0.02、lr5e4 −0.14、label_smoothing0 −0.21、cam_alpha_crop0.3 −0.29。
+       ⇒ lr 1e-3 最优、平滑 0.05 有用、CAM 面积 0.2 最优（CAM 分支几何也饱和）。
+[14:20] 已挂 chain_reg3（等第四批 dp20/cs25/dp_cs/dp10_s3c 结束）：
+       正则族另一批——dropout 0.2 / label_smoothing 0.10 / mixup_p 0.9 / crop_scale 0.20。
+       全部服务于"当前配方处在欠正则一侧"这个唯一还活着的假设。
