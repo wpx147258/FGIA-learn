@@ -53,7 +53,8 @@ class PartAttention(nn.Module):
                  ent_target: float = 0.0, ent_w: float = 0.0, ent_ramp: float = 0.0,
                  compact_w: float = 0.0,
                  dup_w: float = 0.0, dup_thr: float = 0.8,
-                 border_w: float = 0.0, border_b: int = 2):
+                 border_w: float = 0.0, border_b: int = 2,
+                 top_frac: float = 0.0):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -219,6 +220,13 @@ class PartAttention(nn.Module):
         # 乘性出口的门控值（sigmoid(mul_gate)）。如果训练中它一直贴在初值附近，
         # 说明分类目标不需要空间重加权——这是"掩码进不了决策"的决定性读数。
         self._last_gamma = None
+        # 只保留承载前 top_frac 质量的格子（0 = 关闭，用整张掩码池化）。
+        # 依据（2026-10-31 的框分析）：8 个部件的「累计 20% 质量」外接框面积中位 18.5%、
+        # 框内 GT 覆盖率 88%，而按「80% 质量」画出来却是 95%/54% —— 真正的局部结构
+        # 藏在质量尾部那 20% 里，被整图平均的池化抹掉了。
+        # 这个开关让池化只用那一小块局部区域，把结构真正送进分类器。
+        # 对 compete 的硬划分也适用：它只是把每个部件的质量重新集中到自己的峰值区。
+        self.top_frac = float(top_frac)
         self._last_ent_target = float(ent_target)
         # 给分类头用的部件描述子（[B,K,C]）和可微的散度项，训练时由 Classifier 取走
         self._last_z: torch.Tensor | None = None
@@ -271,10 +279,21 @@ class PartAttention(nn.Module):
             m = F.avg_pool2d(m.view(b, self.num_parts, h, w),
                              kernel_size=3, stride=1, padding=1).view(b, self.num_parts, h * w)
         a = m / m.sum(dim=-1, keepdim=True).clamp_min(1e-6)   # 归一化后用于池化
+        if self.top_frac > 0:
+            # 按每个部件自己的质量分布取前 top_frac，其余置零后再归一化。
+            sv, _ = torch.sort(a, dim=-1, descending=True)
+            cum = sv.cumsum(-1)
+            n_keep = (cum <= self.top_frac).sum(-1).clamp_min(1)          # [B,K]
+            thr = torch.gather(sv, -1, (n_keep - 1).unsqueeze(-1))
+            a = torch.where(a >= thr, a, torch.zeros_like(a))
+            a = a / a.sum(dim=-1, keepdim=True).clamp_min(1e-6)
         if self.grouped:
             # 每个部件只用自己那组通道做加权池化（MA-CNN Eq.5 的通道分组版本）
             xs = feat.view(b, self.num_parts, self.group_ch, h, w)
-            mk = m.view(b, self.num_parts, 1, h, w)
+            # ⚠️ 用 a（已归一化、且可能被 top_frac 收紧）而不是 m：
+            # 这里的池化是 sum(x*mk)/sum(mk)，对每个部件的整体缩放不变，
+            # 所以 a 与 m 在 top_frac=0 时数学等价；但 top_frac>0 时只有 a 带着收紧后的支撑集。
+            mk = a.view(b, self.num_parts, 1, h, w)
             z = (xs * mk).sum(dim=(3, 4)) / mk.sum(dim=(3, 4)).clamp_min(1e-6)
         else:
             f = feat.flatten(2)                              # [B,C,N]
@@ -543,6 +562,7 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         dup_thr=float(mcfg.get("pa_dup_thr", 0.9)),
         border_w=float(mcfg.get("pa_border_w", 0.0)),
         border_b=int(mcfg.get("pa_border_b", 2)),
+        top_frac=float(mcfg.get("pa_top_frac", 0.0)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),
