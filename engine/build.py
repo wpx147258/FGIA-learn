@@ -308,6 +308,11 @@ class ClassificationCriterion(nn.Module):
             loss = loss + out["pa_dup"]
             logs["pa_dup"] = float(out["pa_dup"].detach())
 
+        # 质心分离：只罚「两个部件看同一个点」
+        if "pa_cent" in out:
+            loss = loss + out["pa_cent"]
+            logs["pa_cent"] = float(out["pa_cent"].detach())
+
         # 边界惩罚：把掩码质量从图像外圈赶走（防止紧凑团块贴在画框边缘）
         if "pa_border" in out:
             loss = loss + out["pa_border"]

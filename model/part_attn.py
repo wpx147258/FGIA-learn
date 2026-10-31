@@ -55,7 +55,8 @@ class PartAttention(nn.Module):
                  dup_w: float = 0.0, dup_thr: float = 0.8,
                  border_w: float = 0.0, border_b: int = 2,
                  top_frac: float = 0.0,
-                 center_gate: float = 0.0):
+                 center_gate: float = 0.0,
+                 cent_w: float = 0.0, cent_margin: float = 0.2):
         super().__init__()
         self.num_parts = int(num_parts)
         # 竞争式划分：每个空间位置在 K 个部件之间做 softmax（而不是每个部件
@@ -234,6 +235,13 @@ class PartAttention(nn.Module):
         # 两者从没组合过。center_gate = 高斯的 sigma²（0 = 关闭）。池化用的是归一化后的 a，
         # 所以乘常数不改变 compete 的分区结构，只把质量往中心搬。
         self.center_gate = float(center_gate)
+        # 质心分离项（2026-10-31）：实测 8 个部件的质心只差 0.04~0.06（归一化坐标）≈ 不到 1 个格子，
+        # 也就是「分布形状不同、但都在看同一个点」。K_eff 再高也不代表部件在空间上分开。
+        # 这里直接罚「质心两两距离 < margin」的那部分（归一化坐标，margin=0.2 ≈ 3 个格子）。
+        # 只罚太近，不奖励太远 —— 相距超过 margin 的部件完全不受影响。
+        self.cent_w = float(cent_w)
+        self.cent_margin = float(cent_margin)
+        self._last_cent = None
         self._last_ent_target = float(ent_target)
         # 给分类头用的部件描述子（[B,K,C]）和可微的散度项，训练时由 Classifier 取走
         self._last_z: torch.Tensor | None = None
@@ -389,6 +397,21 @@ class PartAttention(nn.Module):
             self._last_dup = (self.dup_w * (worst - self.dup_thr).clamp_min(0.0)).mean()
         else:
             self._last_dup = None
+
+        # 质心分离：只罚「两个部件看同一个点」
+        if self.cent_w > 0 and self.num_parts > 1:
+            yy_ = (torch.arange(h, device=a.device, dtype=a.dtype) + 0.5) / h
+            xx_ = (torch.arange(w, device=a.device, dtype=a.dtype) + 0.5) / w
+            Y = yy_.view(1, 1, h, 1).expand(a.shape[0], self.num_parts, h, w).reshape(a.shape[0], self.num_parts, -1)
+            X = xx_.view(1, 1, 1, w).expand(a.shape[0], self.num_parts, h, w).reshape(a.shape[0], self.num_parts, -1)
+            cy = (a * Y).sum(-1); cx = (a * X).sum(-1)             # [B,K]
+            dy = cy[:, :, None] - cy[:, None, :]
+            dx = cx[:, :, None] - cx[:, None, :]
+            dist = (dy ** 2 + dx ** 2).clamp_min(1e-12).sqrt()
+            off = 1.0 - torch.eye(self.num_parts, device=a.device)
+            self._last_cent = (self.cent_w * (self.cent_margin - dist).clamp_min(0.0) * off).sum(dim=(1, 2)).mean() / max(self.num_parts - 1, 1)
+        else:
+            self._last_cent = None
 
         # 空间紧致：罚每个部件掩码的空间方差（等效于罚外接框面积）
         if self.compact_w > 0:
@@ -595,6 +618,8 @@ def build_part_attention(backbone: nn.Module, mcfg: dict,
         border_b=int(mcfg.get("pa_border_b", 2)),
         top_frac=float(mcfg.get("pa_top_frac", 0.0)),
         center_gate=float(mcfg.get("pa_center_gate", 0.0)),
+        cent_w=float(mcfg.get("pa_cent_w", 0.0)),
+        cent_margin=float(mcfg.get("pa_cent_margin", 0.2)),
         no_residual=bool(mcfg.get("pa_no_residual", False)),
         detach_feat=bool(mcfg.get("pa_detach", False)),
         perm_path=str(mcfg.get("pa_perm") or ""),

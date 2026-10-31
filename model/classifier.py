@@ -711,6 +711,8 @@ class Classifier(nn.Module):
             out["pa_dup"] = _pa._last_dup
         if _pa is not None and getattr(_pa, "_last_border", None) is not None:
             out["pa_border"] = _pa._last_border
+        if _pa is not None and getattr(_pa, "_last_cent", None) is not None:
+            out["pa_cent"] = _pa._last_cent
         if self.tokenlearner is not None and self.tokenlearner._reg is not None:
             out["tl_reg"] = self.tokenlearner._reg
         if self.training and getattr(self.tokenlearner, "_last_z", None) is not None:
