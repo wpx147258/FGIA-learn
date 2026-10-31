@@ -456,7 +456,24 @@ class PartAttention(nn.Module):
             # 3×3 平均（步长 1、padding 1）后再归一化：把碎斑连成片。
             # 注意 compete 下 sum_k m = 1，池化后仍然成立（平均是线性算子）。
             m = F.avg_pool2d(m, kernel_size=3, stride=1, padding=1)
-        return m
+        # ⚠️ 2026-10-31 修复：下面两步是 forward 里池化前的后处理，以前只写在 forward，
+        # part_masks 不应用 —— 于是「量出来的掩码」和「模型实际池化用的权重」不是同一个东西
+        # （中心门探针量到 GT 0.98，就是因为量的是未加门的掩码）。诊断必须在同一口径上。
+        a = m / m.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        if self.center_gate > 0:
+            gy = (torch.arange(h, device=a.device, dtype=a.dtype) + 0.5) / h * 2 - 1
+            gx = (torch.arange(w, device=a.device, dtype=a.dtype) + 0.5) / w * 2 - 1
+            gg = torch.exp(-((gy.view(1, 1, h, 1) ** 2 + gx.view(1, 1, 1, w) ** 2) / self.center_gate))
+            a = (a.view(b, k, h, w) * gg).view(b, k, -1)
+            a = a / a.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        if self.top_frac > 0:
+            sv, _ = torch.sort(a, dim=-1, descending=True)
+            cum = sv.cumsum(-1)
+            n_keep = (cum <= self.top_frac).sum(-1).clamp_min(1)
+            thr = torch.gather(sv, -1, (n_keep - 1).unsqueeze(-1))
+            a = torch.where(a >= thr, a, torch.zeros_like(a))
+            a = a / a.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+        return a.view(b, k, h, w)
 
     def hook(self, module, inputs, output):
         """layer4 的 forward hook：GAP 之前把部件注意力的结果加进去。
