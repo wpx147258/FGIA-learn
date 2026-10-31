@@ -6,7 +6,9 @@
 # 而现在的池化把整张掩码当权重、等于又摊回整图。
 # 这个开关让池化只用那一小块，是"让掩码结构真正进入分类器"最直接的一步。
 #
-# 配置：四项目版（重叠 + 紧致3.0 + 边界1.0 + 反重复IoU）+ top_frac 0.2 / 0.1。
+# 配置：**标准 PA（compete=true）** + top_frac 0.2 / 0.1。
+# ⚠️ 不用四项目版：它 K_eff=1.05（8 个部件是同一张拷贝），拿它做局部池化没有意义。
+# 标准 PA 的 K_eff=6.92（真分化），每个部件平均占 1/8 图；取其前 20% 质量 ≈ 2.5% 的局部区域。
 # 参照：同机同种子的 `pa4k8_full_s1` = 89.28、`base_s1` = 89.26。
 set -u
 cd "$(dirname "$0")/.." || exit 1
@@ -25,12 +27,11 @@ BASE=(
   MODEL.name=resnet50.fb_swsl_ig1b_ft_in1k MODEL.dropout=0.1
   "TRAIN.swa_start_frac=[0.5, 0.6, 0.7]" DATASET.train_on_val=true
   MODEL.part_attn=true MODEL.pa_from=layer4 MODEL.pa_parts=8 MODEL.pa_grouped=true
-  MODEL.pa_compete=false MODEL.pa_norm_spatial=true MODEL.pa_tau=0.1
-  MODEL.pa_compact_w=3.0 MODEL.pa_dup_w=1.0 MODEL.pa_dup_thr=0.9 MODEL.pa_border_w=1.0
-  TRAIN.pa_div_w=0.0 TRAIN.pa_aux_w=0.0 MODEL.pa_js_w=0.0 TRAIN.pa_lr=5.0e-4
+  MODEL.pa_compete=true MODEL.pa_norm_spatial=true MODEL.pa_tau=0.1
+  TRAIN.pa_div_w=1.0 TRAIN.pa_aux_w=0.5 MODEL.pa_js_w=0.0 TRAIN.pa_lr=5.0e-4
 )
 for f in 0.2 0.1; do
-  name=r50_all_pa4k8_top$(echo $f | tr -d '.')
+  name=r50_all_pa4k8_stdtop$(echo $f | tr -d '.')
   echo "[$(date '+%F %T')] START $name" >> "$LOG"
   "$PY" train.py "${BASE[@]}" MODEL.pa_top_frac=$f SEED=1 EXP_NAME="$name" > "logs/${name}_train.log" 2>&1
   d=$(ls -dt "outputs/${name}"/*/ 2>/dev/null | head -1)
