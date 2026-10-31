@@ -425,3 +425,6 @@
          ra_geo（只开几何增强）/ ra_re（Random Erasing 0.25）/
          ra_both（两者）/ ra_color（含颜色类操作——文档警告过可能伤，但从未测过）
        config 已逐项核对写入正确。
+[08:20] 第二轴批次已挂链（/root/chain_reg.sh，等增强批结束自动起）：
+       crop_scale 0.35 / 0.65、weight_decay 0.02、drop_path_rate 0.1。
+       这些都是 config 里存在但**全训口径从未扫过**的开关。
