@@ -438,3 +438,9 @@
        本地：`e75m2_rare_s1` ep26/75 → 之后 `rare_s7`。
 [10:55] 修掉一个排链 bug：用 `pgrep -fc` 计数 + `-eq` 比较，无匹配时 pgrep 返回 "0\n0"，
        比较失败导致链永久空转。改成 `pgrep -f ... >/dev/null` 的退出码判断。
+[11:20] **又找到一个实现了但从未启用的机制**：`strong_view`（弱-强一致性，
+       dataset/strong_view.py + TRAIN.strong_ce/strong_kl 全部实现好了，strong_view 一直是 false）。
+       机制：每批对混图后的张量再做几何强扰动（旋转15°/剪切10%/平移10%），单独过一遍 backbone，
+       给它自己的 CE —— 用一次额外前向，符合"机制本身可以多次前向"的约束。
+       ⚠️ 只用 strong_ce，**不用 strong_kl**（后者是 detached 教师做 KL，属于自蒸馏，与约束冲突）。
+       已挂 chain_sv.sh（等 RE 批结束）：ce=1.0 / ce=0.5 / ce=1.0+强视图擦除0.5 / ce=1.0+RE0.25。
