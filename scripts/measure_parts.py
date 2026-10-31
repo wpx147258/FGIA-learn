@@ -137,7 +137,7 @@ def measure(ckpt_path, idxs, dev, n_keep=200):
 
     a = np.array(rows)
     return dict(area=a[:, 0], gt=a[:, 1], border=a[:, 2], fill=a[:, 3],
-                iou=a[:, 4], k_eff=a[:, 5])
+                iou=a[:, 4], k_eff=a[:, 5], centroid=a[:, 6])
 
 
 def main():
@@ -160,7 +160,8 @@ def main():
             ("border", "边界质量比", 1),
             ("fill", "框内填充率", 100),
             ("iou", "部件两两余弦", 1),
-            ("k_eff", "有效部件数 K_eff", 1)]
+            ("k_eff", "有效部件数 K_eff", 1),
+            ("centroid", "质心两两距离（14 格制）", 1)]
     print(f"\n抽样 n={a.n}（等距，全 test 5794）")
     hdr = f"{'指标':26s}" + "".join(f"{l:>16s}" for l in labels)
     print(hdr); print("-" * len(hdr))
